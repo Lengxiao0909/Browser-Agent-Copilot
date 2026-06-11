@@ -11,6 +11,7 @@
     "build": "pnpm prisma:generate && pnpm -r build",
     "typecheck": "pnpm prisma:generate && pnpm --filter @bac/shared build && pnpm -r --parallel typecheck:local",
     "lint": "pnpm -r lint",
+    "test": "pnpm --filter @bac/shared build && pnpm --filter @bac/api test",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma"
   },
