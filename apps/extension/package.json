@@ -7,7 +7,7 @@
     "dev": "wxt",
     "build": "wxt build",
     "typecheck": "pnpm typecheck:local",
-    "typecheck:local": "vue-tsc --noEmit",
+    "typecheck:local": "wxt prepare && vue-tsc --noEmit",
     "lint": "eslint . --ext .ts,.vue"
   },
   "dependencies": {
