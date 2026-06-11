@@ -21,12 +21,16 @@ Implemented:
 - Background execution of planned tool calls through the active tab.
 - Tool result injection into `/chat/stream`.
 - Chat tool status cards.
+- Focused planner tests for low-risk intent routing.
+- Copy action for structured manual Page Tools output.
+- Confirmation gate foundation for non-low-risk browser actions.
+- Agent-created tab conversation inheritance through a controlled background
+  message.
 
 Not implemented:
 
-- Medium/high-risk confirmation flow.
+- Concrete medium/high-risk browser actions.
 - DevTools MCP adapter.
-- Agent-created tab inheritance.
 - Automated extension E2E tests.
 
 ## Supported Low-Risk Tools
@@ -87,30 +91,36 @@ apps/extension/.output/chrome-mv3
 - Failed tools do not crash the stream; the user sees the failure state.
 - `pnpm typecheck`, `pnpm lint`, and `pnpm build` pass.
 
-## Next Tasks
+## Completed Tasks
 
-- [ ] Add focused tests for `/chat/plan` intent routing.
+- [x] Add focused tests for `/chat/plan` intent routing.
   - Acceptance: supported low-risk intents map to expected tool calls.
-  - Verify: API test command or targeted TypeScript test once test harness exists.
+  - Verify: `pnpm test`.
   - Files: `apps/api/src/modules/chat/*`.
 
-- [ ] Add structured copy for manual Page Tools output.
+- [x] Add structured copy for manual Page Tools output.
   - Acceptance: users can copy the latest structured tool result from the drawer.
   - Verify: extension typecheck, build, and manual panel check.
   - Files: `apps/extension/src/App.vue`, `apps/extension/src/stores/copilot.ts`.
 
-- [ ] Add confirmation UX for medium/high-risk actions.
+- [x] Add confirmation UX for medium/high-risk actions.
   - Acceptance: non-low-risk actions cannot execute without explicit user
     confirmation in the panel.
   - Verify: typecheck, build, manual refusal/confirm paths.
   - Files: shared tool protocol, background bridge, panel UI.
 
-- [ ] Add Agent-created tab conversation inheritance.
+- [x] Add Agent-created tab conversation inheritance.
   - Acceptance: future agent-created tabs can inherit a parent conversation ID
     without normal browsing tabs overwriting each other.
   - Verify: background storage tests or manual tab checks.
   - Files: `apps/extension/entrypoints/background.ts`,
     `apps/extension/src/stores/copilot.ts`.
+
+## Follow-Up Tasks
+
+- [ ] Add concrete medium-risk browser actions behind the confirmation gate.
+- [ ] Add browser extension E2E coverage for the bridge and tool cards.
+- [ ] Add DevTools MCP adapter in Stage E.
 
 ## Open Questions
 
