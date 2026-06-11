@@ -46,6 +46,7 @@ const {
   isToolsOpen,
   isExecutingTool,
   toolError,
+  toolCopyStatus,
   lastToolResult,
   isLoadingConversations,
   conversationError,
@@ -445,8 +446,20 @@ onUnmounted(() => {
 
       <section v-if="isToolsOpen" class="bac-tool-drawer" @pointerdown.stop>
         <div class="bac-tool-head">
-          <span>页面工具</span>
-          <small>低风险浏览器动作</small>
+          <div>
+            <span>页面工具</span>
+            <small>低风险浏览器动作</small>
+          </div>
+          <button
+            class="bac-tool-copy"
+            title="复制工具结果"
+            type="button"
+            :disabled="!lastToolResult"
+            @click="store.copyLastToolResult"
+          >
+            <Copy :size="12" />
+            <span>{{ toolCopyStatus === 'copied' ? '已复制' : toolCopyStatus === 'failed' ? '失败' : '复制结果' }}</span>
+          </button>
         </div>
 
         <div class="bac-tool-actions">

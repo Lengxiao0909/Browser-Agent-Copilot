@@ -192,10 +192,18 @@ textarea {
 }
 
 .bac-tool-head {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+  justify-content: space-between;
+  padding: 8px 2px 7px;
+}
+
+.bac-tool-head div {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 2px 7px;
+  min-width: 0;
 }
 
 .bac-tool-head span {
@@ -207,6 +215,32 @@ textarea {
 .bac-tool-head small {
   color: rgba(31, 35, 40, 0.48);
   font-size: 11px;
+}
+
+.bac-tool-copy {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  border-radius: 999px;
+  color: rgba(31, 35, 40, 0.62);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+}
+
+.bac-tool-copy:hover {
+  background: rgba(16, 163, 127, 0.12);
+  border-color: rgba(16, 163, 127, 0.22);
+  color: #0c7d62;
+}
+
+.bac-tool-copy:disabled {
+  color: rgba(31, 35, 40, 0.26);
+  cursor: not-allowed;
 }
 
 .bac-tool-actions {

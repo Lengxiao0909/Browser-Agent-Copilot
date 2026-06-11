@@ -36,6 +36,7 @@ interface CopilotState {
   isToolsOpen: boolean;
   isExecutingTool: boolean;
   toolError: string | null;
+  toolCopyStatus: 'idle' | 'copied' | 'failed';
   lastToolResult: BrowserActionResponse | null;
   isLoadingConversations: boolean;
   conversationError: string | null;
@@ -167,6 +168,7 @@ export const useCopilotStore = defineStore('copilot', {
     isToolsOpen: false,
     isExecutingTool: false,
     toolError: null,
+    toolCopyStatus: 'idle',
     lastToolResult: null,
     isLoadingConversations: false,
     conversationError: null,
@@ -293,6 +295,7 @@ export const useCopilotStore = defineStore('copilot', {
     async executeBrowserAction(action: BrowserActionName, input?: unknown) {
       this.isExecutingTool = true;
       this.toolError = null;
+      this.toolCopyStatus = 'idle';
 
       try {
         const response = (await browser.runtime.sendMessage({
@@ -312,6 +315,26 @@ export const useCopilotStore = defineStore('copilot', {
         return this.lastToolResult;
       } finally {
         this.isExecutingTool = false;
+      }
+    },
+
+    async copyLastToolResult() {
+      if (!this.lastToolResult) return;
+
+      const content = this.lastToolResult.ok
+        ? JSON.stringify(this.lastToolResult.output, null, 2)
+        : this.lastToolResult.error;
+
+      try {
+        await navigator.clipboard.writeText(content);
+        this.toolCopyStatus = 'copied';
+        window.setTimeout(() => {
+          if (this.toolCopyStatus === 'copied') {
+            this.toolCopyStatus = 'idle';
+          }
+        }, 1600);
+      } catch {
+        this.toolCopyStatus = 'failed';
       }
     },
 
