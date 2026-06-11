@@ -67,6 +67,10 @@ type TabConversationResponse =
   | { ok: true; state?: PersistedConversation }
   | { ok: false; error?: string };
 
+type OpenAgentTabResponse =
+  | { ok: true; tabId?: number; inherited: boolean }
+  | { ok: false; error?: string };
+
 const debugLoggingKey = 'bac.debugLogging';
 const clientIdKey = 'bac.clientId';
 const maxPersistedMessages = 40;
@@ -154,6 +158,13 @@ async function setTabConversationState(payload: PersistedConversation) {
     type: 'set-tab-conversation',
     payload
   }) as Promise<TabConversationResponse>;
+}
+
+async function requestOpenAgentTab(url: string) {
+  return browser.runtime.sendMessage({
+    type: 'open-agent-tab',
+    url
+  }) as Promise<OpenAgentTabResponse>;
 }
 
 async function getOrCreateClientId() {
@@ -374,6 +385,22 @@ export const useCopilotStore = defineStore('copilot', {
     rejectPendingToolAction() {
       this.pendingToolConfirmation = null;
       this.toolError = null;
+    },
+
+    async openAgentTab(url: string) {
+      try {
+        const response = await requestOpenAgentTab(url);
+        if (!response.ok) {
+          throw new Error(response.error || 'Agent 新标签页创建失败。');
+        }
+        return response;
+      } catch (error) {
+        this.toolError = error instanceof Error ? error.message : 'Agent 新标签页创建失败。';
+        return {
+          ok: false,
+          error: this.toolError
+        } satisfies OpenAgentTabResponse;
+      }
     },
 
     async copyLastToolResult() {

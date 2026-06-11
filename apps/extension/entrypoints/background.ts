@@ -23,7 +23,8 @@ interface PersistedTabConversation {
 type TabConversationMessage =
   | { type: 'get-tab-conversation' }
   | { type: 'set-tab-conversation'; payload: PersistedTabConversation }
-  | { type: 'execute-browser-action'; request: BrowserActionRequest };
+  | { type: 'execute-browser-action'; request: BrowserActionRequest }
+  | { type: 'open-agent-tab'; url: string };
 
 const debugLoggingKey = 'bac.debugLogging';
 const legacyGlobalConversationKey = 'bac.globalConversation';
@@ -71,6 +72,42 @@ function getTabConversationKey(tabId: number) {
 
 function getSenderTabId(sender: { tab?: { id?: number } }) {
   return sender.tab?.id;
+}
+
+async function getStoredTabConversation(tabId: number) {
+  const tabKey = getTabConversationKey(tabId);
+  const stored = await browser.storage.local.get([tabKey, legacyGlobalConversationKey]);
+  const state = stored[tabKey] || stored[legacyGlobalConversationKey];
+  if (!stored[tabKey] && state) {
+    await browser.storage.local.set({ [tabKey]: state });
+  }
+  return state as PersistedTabConversation | undefined;
+}
+
+async function inheritConversationToTab(parentTabId: number, childTabId: number) {
+  const state = await getStoredTabConversation(parentTabId);
+  if (!state) return false;
+
+  await browser.storage.local.set({
+    [getTabConversationKey(childTabId)]: {
+      ...state,
+      updatedAt: new Date().toISOString()
+    }
+  });
+  return true;
+}
+
+function normalizeAgentTabUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    throw new Error('Agent tab URL is required.');
+  }
+
+  const parsed = new URL(trimmed);
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Agent tabs only support http and https URLs.');
+  }
+  return parsed.toString();
 }
 
 function emitSseFrames(buffer: string, emit: (event: ChatStreamEvent) => void) {
@@ -287,7 +324,8 @@ export default defineBackground(() => {
     if (
       message.type !== 'get-tab-conversation' &&
       message.type !== 'set-tab-conversation' &&
-      message.type !== 'execute-browser-action'
+      message.type !== 'execute-browser-action' &&
+      message.type !== 'open-agent-tab'
     ) {
       return undefined;
     }
@@ -307,12 +345,22 @@ export default defineBackground(() => {
         }) as Promise<BrowserActionResponse>;
       }
 
-      if (message.type === 'get-tab-conversation') {
-        const stored = await browser.storage.local.get([tabKey, legacyGlobalConversationKey]);
-        const state = stored[tabKey] || stored[legacyGlobalConversationKey];
-        if (!stored[tabKey] && state) {
-          await browser.storage.local.set({ [tabKey]: state });
+      if (message.type === 'open-agent-tab') {
+        const url = normalizeAgentTabUrl(message.url);
+        const childTab = await browser.tabs.create({
+          url,
+          active: true,
+          openerTabId: tabId
+        });
+        if (typeof childTab.id === 'number') {
+          const inherited = await inheritConversationToTab(tabId, childTab.id);
+          return { ok: true, tabId: childTab.id, inherited };
         }
+        return { ok: true, inherited: false };
+      }
+
+      if (message.type === 'get-tab-conversation') {
+        const state = await getStoredTabConversation(tabId);
         return { ok: true, state };
       }
 
