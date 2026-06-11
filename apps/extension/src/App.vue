@@ -48,6 +48,7 @@ const {
   toolError,
   toolCopyStatus,
   lastToolResult,
+  pendingToolConfirmation,
   isLoadingConversations,
   conversationError,
   conversations,
@@ -492,6 +493,24 @@ onUnmounted(() => {
           <button title="滚动到文本" type="button" :disabled="isExecutingTool || !toolQuery.trim()" @click="runTextTool('browser.scroll_to_text')">
             <RotateCcw :size="13" />
           </button>
+        </div>
+
+        <div v-if="pendingToolConfirmation" class="bac-tool-confirmation">
+          <div>
+            <span>需要确认</span>
+            <small>{{ pendingToolConfirmation.risk }} risk</small>
+          </div>
+          <p>{{ pendingToolConfirmation.summary }}</p>
+          <div class="bac-tool-confirmation-actions">
+            <button type="button" @click="store.confirmPendingToolAction">
+              <Check :size="12" />
+              <span>确认执行</span>
+            </button>
+            <button type="button" @click="store.rejectPendingToolAction">
+              <X :size="12" />
+              <span>取消</span>
+            </button>
+          </div>
         </div>
 
         <div v-if="toolError" class="bac-inline-error">{{ toolError }}</div>

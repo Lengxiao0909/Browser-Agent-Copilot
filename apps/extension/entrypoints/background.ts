@@ -142,6 +142,10 @@ async function executePlannedToolCalls(
 
     let response: BrowserActionResponse;
     try {
+      if (call.risk !== 'low') {
+        throw new Error('此浏览器动作需要用户确认后才能执行。');
+      }
+
       if (typeof tabId !== 'number') {
         throw new Error('Unable to resolve the current tab for tool execution.');
       }

@@ -11,7 +11,8 @@ import type {
   ContextScope,
   PageContext,
   SelectionReference,
-  ToolCallPreview
+  ToolCallPreview,
+  ToolRiskLevel
 } from '@bac/shared';
 import { API_BASE_URL } from '../env';
 
@@ -27,6 +28,13 @@ interface PersistedConversation {
   updatedAt: string;
 }
 
+interface PendingToolConfirmation {
+  action: BrowserActionName;
+  input?: unknown;
+  risk: Exclude<ToolRiskLevel, 'low'>;
+  summary: string;
+}
+
 interface CopilotState {
   isOpen: boolean;
   isHydrated: boolean;
@@ -38,6 +46,7 @@ interface CopilotState {
   toolError: string | null;
   toolCopyStatus: 'idle' | 'copied' | 'failed';
   lastToolResult: BrowserActionResponse | null;
+  pendingToolConfirmation: PendingToolConfirmation | null;
   isLoadingConversations: boolean;
   conversationError: string | null;
   conversations: ConversationSummary[];
@@ -170,6 +179,7 @@ export const useCopilotStore = defineStore('copilot', {
     toolError: null,
     toolCopyStatus: 'idle',
     lastToolResult: null,
+    pendingToolConfirmation: null,
     isLoadingConversations: false,
     conversationError: null,
     conversations: [],
@@ -292,15 +302,47 @@ export const useCopilotStore = defineStore('copilot', {
       this.isToolsOpen = !this.isToolsOpen;
     },
 
-    async executeBrowserAction(action: BrowserActionName, input?: unknown) {
+    async executeBrowserAction(
+      action: BrowserActionName,
+      input?: unknown,
+      options?: {
+        risk?: ToolRiskLevel;
+        summary?: string;
+        confirmed?: boolean;
+      }
+    ) {
+      const risk = options?.risk || 'low';
+
+      if (risk !== 'low' && !options?.confirmed) {
+        this.pendingToolConfirmation = {
+          action,
+          input,
+          risk,
+          summary: options?.summary || action
+        };
+        this.toolError = null;
+        return {
+          ok: false,
+          action,
+          error: '此浏览器动作需要确认后才能执行。'
+        } satisfies BrowserActionResponse;
+      }
+
       this.isExecutingTool = true;
       this.toolError = null;
       this.toolCopyStatus = 'idle';
+      this.pendingToolConfirmation = null;
 
       try {
         const response = (await browser.runtime.sendMessage({
           type: 'execute-browser-action',
-          request: { action, input }
+          request: {
+            action,
+            input,
+            risk,
+            summary: options?.summary,
+            confirmed: options?.confirmed
+          }
         })) as BrowserActionResponse;
 
         this.lastToolResult = response;
@@ -316,6 +358,22 @@ export const useCopilotStore = defineStore('copilot', {
       } finally {
         this.isExecutingTool = false;
       }
+    },
+
+    async confirmPendingToolAction() {
+      const pending = this.pendingToolConfirmation;
+      if (!pending) return;
+
+      await this.executeBrowserAction(pending.action, pending.input, {
+        risk: pending.risk,
+        summary: pending.summary,
+        confirmed: true
+      });
+    },
+
+    rejectPendingToolAction() {
+      this.pendingToolConfirmation = null;
+      this.toolError = null;
     },
 
     async copyLastToolResult() {

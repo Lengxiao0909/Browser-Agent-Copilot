@@ -36,6 +36,9 @@ export type BrowserActionName =
 export interface BrowserActionRequest<Input = unknown> {
   action: BrowserActionName;
   input?: Input;
+  risk?: ToolRiskLevel;
+  summary?: string;
+  confirmed?: boolean;
 }
 
 export type BrowserActionResponse<Output = unknown> =

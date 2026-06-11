@@ -202,6 +202,10 @@ export async function handleBrowserActionRequest(
   request: BrowserActionRequest
 ): Promise<BrowserActionResponse> {
   try {
+    if (request.risk && request.risk !== 'low' && !request.confirmed) {
+      throw new Error('此浏览器动作需要用户确认后才能执行。');
+    }
+
     const output = await executeBrowserAction(request);
     return { ok: true, action: request.action, output };
   } catch (error) {
