@@ -9,7 +9,7 @@
     "dev:extension": "pnpm --filter @bac/extension dev",
     "dev:api": "pnpm --filter @bac/api dev",
     "build": "pnpm prisma:generate && pnpm -r build",
-    "typecheck": "pnpm prisma:generate && pnpm --filter @bac/shared build && pnpm -r --parallel typecheck:local",
+    "typecheck": "pnpm prisma:generate && pnpm --filter @bac/shared build && pnpm --filter @bac/agent-core build && pnpm -r --parallel typecheck:local",
     "lint": "pnpm -r lint",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma"
