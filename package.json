@@ -1,0 +1,30 @@
+{
+  "name": "browser-agent-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:extension": "pnpm --filter @bac/extension dev",
+    "dev:api": "pnpm --filter @bac/api dev",
+    "build": "pnpm prisma:generate && pnpm -r build",
+    "typecheck": "pnpm prisma:generate && pnpm --filter @bac/shared build && pnpm -r --parallel typecheck:local",
+    "lint": "pnpm -r lint",
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^22.10.7",
+    "eslint": "^9.18.0",
+    "eslint-plugin-vue": "^10.9.2",
+    "prettier": "^3.4.2",
+    "prisma": "^6.19.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.60.1"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.0"
+  }
+}

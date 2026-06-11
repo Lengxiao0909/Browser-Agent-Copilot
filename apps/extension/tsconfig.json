@@ -1,0 +1,11 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@bac/shared": ["../../packages/shared/src/index.ts"],
+      "@bac/shared/*": ["../../packages/shared/src/*"]
+    }
+  }
+}
