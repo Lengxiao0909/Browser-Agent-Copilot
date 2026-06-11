@@ -246,12 +246,138 @@ function getToolCallStatusLabel(status?: ToolCallPreview['status']) {
   return '已计划';
 }
 
-function getToolCallPreview(toolCall: ToolCallPreview) {
-  const value = toolCall.error || toolCall.output;
-  if (!value) return '';
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
-  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  return text.length > 900 ? `${text.slice(0, 900)}\n...` : text;
+function getStringField(value: Record<string, unknown>, key: string) {
+  const field = value[key];
+  return typeof field === 'string' ? field : undefined;
+}
+
+function getNumberField(value: Record<string, unknown>, key: string) {
+  const field = value[key];
+  return typeof field === 'number' ? field : undefined;
+}
+
+function truncateText(value: string, limit = 96) {
+  const text = value.replace(/\s+/g, ' ').trim();
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function formatCompactValue(value: unknown, limit = 900) {
+  if (value === undefined || value === null) return '';
+
+  let text = '';
+  if (typeof value === 'string') {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value, null, 2) || '';
+    } catch {
+      text = String(value);
+    }
+  }
+
+  return text.length > limit ? `${text.slice(0, limit)}\n...` : text;
+}
+
+function formatCount(value: number | undefined, unit: string) {
+  return `${value ?? 0} ${unit}`;
+}
+
+function getArrayField(value: Record<string, unknown>, key: string) {
+  const field = value[key];
+  return Array.isArray(field) ? field : [];
+}
+
+function formatLinkLine(link: unknown, index: number) {
+  if (!isRecord(link)) return `${index + 1}. ${truncateText(String(link))}`;
+  const text = getStringField(link, 'text') || '未命名链接';
+  const href = getStringField(link, 'href');
+  return `${index + 1}. ${truncateText(text, 42)}${href ? ` - ${truncateText(href, 72)}` : ''}`;
+}
+
+function formatMatchLine(match: unknown) {
+  if (!isRecord(match)) return truncateText(String(match));
+  const text = getStringField(match, 'text') || '';
+  const before = getStringField(match, 'before');
+  const after = getStringField(match, 'after');
+  const context = `${before ? `${truncateText(before, 42)} ` : ''}${text}${after ? ` ${truncateText(after, 42)}` : ''}`;
+  return truncateText(context || text || '匹配到文本', 110);
+}
+
+function getToolCallResultSummary(toolCall: ToolCallPreview) {
+  if (toolCall.error) return toolCall.error;
+  if (toolCall.status === 'running') return '正在通过页面工具读取当前网页...';
+  if (!toolCall.output || !isRecord(toolCall.output)) {
+    return typeof toolCall.output === 'string' ? truncateText(toolCall.output, 180) : '';
+  }
+
+  const output = toolCall.output;
+
+  if (toolCall.toolName === 'browser.get_page_summary') {
+    const title = getStringField(output, 'title') || '当前页面';
+    const url = getStringField(output, 'url');
+    const headingCount = getNumberField(output, 'headingCount');
+    const linkCount = getNumberField(output, 'linkCount');
+    return [
+      `已读取《${truncateText(title, 56)}》。`,
+      `${formatCount(headingCount, '个标题')}，${formatCount(linkCount, '个链接')}${url ? `。${truncateText(url, 96)}` : '。'}`
+    ].join('\n');
+  }
+
+  if (toolCall.toolName === 'browser.extract_links') {
+    const links = getArrayField(output, 'links');
+    const examples = links.slice(0, 3).map(formatLinkLine);
+    return [`找到 ${links.length} 个链接。`, ...examples].join('\n');
+  }
+
+  if (toolCall.toolName === 'browser.describe_page_structure') {
+    const headings = getArrayField(output, 'headings');
+    const landmarks = getArrayField(output, 'landmarks');
+    const headingSamples = headings
+      .slice(0, 3)
+      .map((heading, index) => (isRecord(heading) ? `${index + 1}. ${truncateText(getStringField(heading, 'text') || '未命名标题', 64)}` : ''));
+    return [`读取 ${headings.length} 个标题、${landmarks.length} 个页面区域。`, ...headingSamples.filter(Boolean)].join('\n');
+  }
+
+  if (toolCall.toolName === 'browser.read_selected_text') {
+    const selection = output.selection;
+    if (!isRecord(selection)) return '当前没有可读取的选区。';
+    const text = getStringField(selection, 'text') || '';
+    return text ? `已读取选区 ${text.length} 个字符：${truncateText(text, 120)}` : '当前选区为空。';
+  }
+
+  if (toolCall.toolName === 'browser.find_text') {
+    const query = getStringField(output, 'query');
+    const matches = getArrayField(output, 'matches');
+    const firstMatch = matches[0] ? `首个匹配：${formatMatchLine(matches[0])}` : '没有找到匹配文本。';
+    return [`${query ? `查找“${truncateText(query, 40)}”` : '文本查找'}，找到 ${matches.length} 处匹配。`, firstMatch].join('\n');
+  }
+
+  if (toolCall.toolName === 'browser.highlight_text') {
+    const query = getStringField(output, 'query');
+    const highlighted = getNumberField(output, 'highlighted') ?? getArrayField(output, 'matches').length;
+    return `${query ? `已高亮“${truncateText(query, 40)}”` : '已高亮匹配文本'}，共 ${highlighted} 处。`;
+  }
+
+  if (toolCall.toolName === 'browser.scroll_to_text') {
+    const query = getStringField(output, 'query');
+    const scrolled = output.scrolled === true;
+    const match = output.match ? `\n定位文本：${formatMatchLine(output.match)}` : '';
+    return `${scrolled ? '已滚动到' : '未找到可滚动到的'}${query ? `“${truncateText(query, 40)}”` : '目标文本'}。${match}`;
+  }
+
+  return formatCompactValue(toolCall.output, 240);
+}
+
+function shouldShowToolCallDetails(toolCall: ToolCallPreview) {
+  return Boolean(toolCall.error || (toolCall.output && typeof toolCall.output === 'object'));
+}
+
+function getToolCallDetails(toolCall: ToolCallPreview) {
+  return formatCompactValue(toolCall.error || toolCall.output);
 }
 
 async function runTextTool(action: 'browser.find_text' | 'browser.highlight_text' | 'browser.scroll_to_text') {
@@ -614,7 +740,13 @@ onUnmounted(() => {
                 <small>{{ getToolCallStatusLabel(toolCall.status) }}</small>
               </div>
               <p>{{ toolCall.summary }}</p>
-              <pre v-if="getToolCallPreview(toolCall)">{{ getToolCallPreview(toolCall) }}</pre>
+              <div v-if="getToolCallResultSummary(toolCall)" class="bac-tool-call-result">
+                {{ getToolCallResultSummary(toolCall) }}
+              </div>
+              <details v-if="shouldShowToolCallDetails(toolCall)" class="bac-tool-call-details">
+                <summary>查看原始结果</summary>
+                <pre>{{ getToolCallDetails(toolCall) }}</pre>
+              </details>
             </div>
           </div>
           <div

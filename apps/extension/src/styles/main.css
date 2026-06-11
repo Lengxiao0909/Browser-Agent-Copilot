@@ -695,7 +695,42 @@ textarea {
   margin: 4px 0 0;
 }
 
-.bac-tool-call-card pre {
+.bac-tool-call-result {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(31, 35, 40, 0.06);
+  border-radius: 9px;
+  color: rgba(31, 35, 40, 0.82);
+  font-size: 11px;
+  line-height: 1.48;
+  margin-top: 7px;
+  padding: 7px 8px;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.bac-tool-call-card.error .bac-tool-call-result {
+  background: rgba(255, 255, 255, 0.58);
+  color: #9f2015;
+}
+
+.bac-tool-call-details {
+  margin-top: 6px;
+}
+
+.bac-tool-call-details summary {
+  color: rgba(31, 35, 40, 0.48);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.bac-tool-call-details summary:hover {
+  color: rgba(31, 35, 40, 0.68);
+}
+
+.bac-tool-call-details pre {
   background: rgba(17, 19, 24, 0.88);
   border-radius: 9px;
   color: #ffffff;
