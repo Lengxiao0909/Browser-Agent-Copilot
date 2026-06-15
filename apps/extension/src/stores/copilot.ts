@@ -728,7 +728,7 @@ export const useCopilotStore = defineStore('copilot', {
         this.streamError = message;
       } finally {
         const current = assistantIndex >= 0 ? this.messages[assistantIndex] : undefined;
-        if (current && !current.content && !current.toolCalls?.length) {
+        if (current && !current.content) {
           this.messages.splice(assistantIndex, 1);
         }
         this.isStreaming = false;

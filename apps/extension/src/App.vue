@@ -23,7 +23,7 @@ import {
 } from 'lucide-vue-next';
 import { storeToRefs } from 'pinia';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { QUICK_ACTIONS, type ChatMessage, type ContextScope, type QuickAction, type ToolCallPreview } from '@bac/shared';
+import { QUICK_ACTIONS, type ChatMessage, type ContextScope, type QuickAction } from '@bac/shared';
 import { useCopilotStore } from './stores/copilot';
 import { collectPageContext, getCurrentSelection } from './utils/pageContext';
 import { renderMarkdown } from './utils/markdown';
@@ -82,6 +82,7 @@ const dragState = ref<{
   moved: boolean;
 } | null>(null);
 let navigationTimer: ReturnType<typeof setInterval> | undefined;
+let selectionTimer: ReturnType<typeof setTimeout> | undefined;
 let composerFocusTimer: number | undefined;
 
 const contextualActions = computed(() => {
@@ -90,10 +91,16 @@ const contextualActions = computed(() => {
     : ['summarize-context', 'analyze-page', 'extract-key-info'];
   return QUICK_ACTIONS.filter((action) => allowedIds.includes(action.id));
 });
+const explainSelectionAction = computed(() =>
+  QUICK_ACTIONS.find((action) => action.id === 'explain-selection')
+);
 
 const canSend = computed(() => draft.value.trim().length > 0 && !isStreaming.value);
 const hasConversationContent = computed(
   () => messages.value.length > 0 || draft.value.trim().length > 0 || Boolean(streamError.value)
+);
+const visibleMessages = computed(() =>
+  messages.value.filter((message) => message.role === 'user' || message.content.trim())
 );
 const shouldShowContextualActions = computed(
   () =>
@@ -107,7 +114,7 @@ const hasVisibleStreamingAnswer = computed(() => {
   const lastMessage = messages.value[messages.value.length - 1];
   return Boolean(
     lastMessage?.role === 'assistant' &&
-      (lastMessage.content.trim() || lastMessage.toolCalls?.length)
+      lastMessage.content.trim()
   );
 });
 const shouldShowThinking = computed(() => isStreaming.value && !hasVisibleStreamingAnswer.value);
@@ -216,14 +223,22 @@ function updateSelectionButton() {
   };
 }
 
+function scheduleSelectionButtonUpdate() {
+  if (selectionTimer) {
+    clearTimeout(selectionTimer);
+  }
+  selectionTimer = setTimeout(updateSelectionButton, 60);
+}
+
 function useSelectionAsReference() {
   if (!selection.value) return;
   store.open();
   store.setContextScope('selection');
-  if (!draft.value.trim()) {
-    draft.value = '请解释选中的内容，并补充必要背景。';
-  }
   selectionButton.value.visible = false;
+  draft.value = explainSelectionAction.value?.prompt || '请解释选中的内容，并补充必要背景。';
+  void nextTick(() => {
+    void sendMessage(explainSelectionAction.value);
+  });
 }
 
 function formatConversationTime(value: string) {
@@ -246,160 +261,6 @@ function getToolResultPreview() {
   if (!lastToolResult.value) return '';
   if (!lastToolResult.value.ok) return lastToolResult.value.error;
   return JSON.stringify(lastToolResult.value.output, null, 2);
-}
-
-function getToolCallLabel(toolName: string) {
-  const labels: Record<string, string> = {
-    'browser.get_page_summary': '页面摘要',
-    'browser.extract_links': '提取链接',
-    'browser.describe_page_structure': '页面结构',
-    'browser.find_text': '查找文本',
-    'browser.highlight_text': '高亮文本',
-    'browser.scroll_to_text': '滚动定位',
-    'browser.read_selected_text': '读取选区'
-  };
-  return labels[toolName] || toolName;
-}
-
-function getToolCallStatusLabel(status?: ToolCallPreview['status']) {
-  if (status === 'running') return '执行中';
-  if (status === 'success') return '已完成';
-  if (status === 'error') return '失败';
-  return '已计划';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function getStringField(value: Record<string, unknown>, key: string) {
-  const field = value[key];
-  return typeof field === 'string' ? field : undefined;
-}
-
-function getNumberField(value: Record<string, unknown>, key: string) {
-  const field = value[key];
-  return typeof field === 'number' ? field : undefined;
-}
-
-function truncateText(value: string, limit = 96) {
-  const text = value.replace(/\s+/g, ' ').trim();
-  return text.length > limit ? `${text.slice(0, limit)}...` : text;
-}
-
-function formatCompactValue(value: unknown, limit = 900) {
-  if (value === undefined || value === null) return '';
-
-  let text = '';
-  if (typeof value === 'string') {
-    text = value;
-  } else {
-    try {
-      text = JSON.stringify(value, null, 2) || '';
-    } catch {
-      text = String(value);
-    }
-  }
-
-  return text.length > limit ? `${text.slice(0, limit)}\n...` : text;
-}
-
-function formatCount(value: number | undefined, unit: string) {
-  return `${value ?? 0} ${unit}`;
-}
-
-function getArrayField(value: Record<string, unknown>, key: string) {
-  const field = value[key];
-  return Array.isArray(field) ? field : [];
-}
-
-function formatLinkLine(link: unknown, index: number) {
-  if (!isRecord(link)) return `${index + 1}. ${truncateText(String(link))}`;
-  const text = getStringField(link, 'text') || '未命名链接';
-  const href = getStringField(link, 'href');
-  return `${index + 1}. ${truncateText(text, 42)}${href ? ` - ${truncateText(href, 72)}` : ''}`;
-}
-
-function formatMatchLine(match: unknown) {
-  if (!isRecord(match)) return truncateText(String(match));
-  const text = getStringField(match, 'text') || '';
-  const before = getStringField(match, 'before');
-  const after = getStringField(match, 'after');
-  const context = `${before ? `${truncateText(before, 42)} ` : ''}${text}${after ? ` ${truncateText(after, 42)}` : ''}`;
-  return truncateText(context || text || '匹配到文本', 110);
-}
-
-function getToolCallResultSummary(toolCall: ToolCallPreview) {
-  if (toolCall.error) return toolCall.error;
-  if (toolCall.status === 'running') return '正在通过页面工具读取当前网页...';
-  if (!toolCall.output || !isRecord(toolCall.output)) {
-    return typeof toolCall.output === 'string' ? truncateText(toolCall.output, 180) : '';
-  }
-
-  const output = toolCall.output;
-
-  if (toolCall.toolName === 'browser.get_page_summary') {
-    const title = getStringField(output, 'title') || '当前页面';
-    const url = getStringField(output, 'url');
-    const headingCount = getNumberField(output, 'headingCount');
-    const linkCount = getNumberField(output, 'linkCount');
-    return [
-      `已读取《${truncateText(title, 56)}》。`,
-      `${formatCount(headingCount, '个标题')}，${formatCount(linkCount, '个链接')}${url ? `。${truncateText(url, 96)}` : '。'}`
-    ].join('\n');
-  }
-
-  if (toolCall.toolName === 'browser.extract_links') {
-    const links = getArrayField(output, 'links');
-    const examples = links.slice(0, 3).map(formatLinkLine);
-    return [`找到 ${links.length} 个链接。`, ...examples].join('\n');
-  }
-
-  if (toolCall.toolName === 'browser.describe_page_structure') {
-    const headings = getArrayField(output, 'headings');
-    const landmarks = getArrayField(output, 'landmarks');
-    const headingSamples = headings
-      .slice(0, 3)
-      .map((heading, index) => (isRecord(heading) ? `${index + 1}. ${truncateText(getStringField(heading, 'text') || '未命名标题', 64)}` : ''));
-    return [`读取 ${headings.length} 个标题、${landmarks.length} 个页面区域。`, ...headingSamples.filter(Boolean)].join('\n');
-  }
-
-  if (toolCall.toolName === 'browser.read_selected_text') {
-    const selection = output.selection;
-    if (!isRecord(selection)) return '当前没有可读取的选区。';
-    const text = getStringField(selection, 'text') || '';
-    return text ? `已读取选区 ${text.length} 个字符：${truncateText(text, 120)}` : '当前选区为空。';
-  }
-
-  if (toolCall.toolName === 'browser.find_text') {
-    const query = getStringField(output, 'query');
-    const matches = getArrayField(output, 'matches');
-    const firstMatch = matches[0] ? `首个匹配：${formatMatchLine(matches[0])}` : '没有找到匹配文本。';
-    return [`${query ? `查找“${truncateText(query, 40)}”` : '文本查找'}，找到 ${matches.length} 处匹配。`, firstMatch].join('\n');
-  }
-
-  if (toolCall.toolName === 'browser.highlight_text') {
-    const query = getStringField(output, 'query');
-    const highlighted = getNumberField(output, 'highlighted') ?? getArrayField(output, 'matches').length;
-    return `${query ? `已高亮“${truncateText(query, 40)}”` : '已高亮匹配文本'}，共 ${highlighted} 处。`;
-  }
-
-  if (toolCall.toolName === 'browser.scroll_to_text') {
-    const query = getStringField(output, 'query');
-    const scrolled = output.scrolled === true;
-    const match = output.match ? `\n定位文本：${formatMatchLine(output.match)}` : '';
-    return `${scrolled ? '已滚动到' : '未找到可滚动到的'}${query ? `“${truncateText(query, 40)}”` : '目标文本'}。${match}`;
-  }
-
-  return formatCompactValue(toolCall.output, 240);
-}
-
-function shouldShowToolCallDetails(toolCall: ToolCallPreview) {
-  return Boolean(toolCall.error || (toolCall.output && typeof toolCall.output === 'object'));
-}
-
-function getToolCallDetails(toolCall: ToolCallPreview) {
-  return formatCompactValue(toolCall.error || toolCall.output);
 }
 
 async function runTextTool(action: 'browser.find_text' | 'browser.highlight_text' | 'browser.scroll_to_text') {
@@ -614,8 +475,9 @@ watch(isStreaming, async (streaming) => {
 onMounted(() => {
   setInitialPositions();
   void store.hydrate();
-  document.addEventListener('mouseup', updateSelectionButton);
-  document.addEventListener('keyup', updateSelectionButton);
+  document.addEventListener('mouseup', scheduleSelectionButtonUpdate);
+  document.addEventListener('keyup', scheduleSelectionButtonUpdate);
+  document.addEventListener('selectionchange', scheduleSelectionButtonUpdate);
   window.addEventListener('resize', handleResize);
   window.addEventListener('popstate', handlePageUrlChanged);
   window.addEventListener('hashchange', handlePageUrlChanged);
@@ -623,13 +485,17 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  document.removeEventListener('mouseup', updateSelectionButton);
-  document.removeEventListener('keyup', updateSelectionButton);
+  document.removeEventListener('mouseup', scheduleSelectionButtonUpdate);
+  document.removeEventListener('keyup', scheduleSelectionButtonUpdate);
+  document.removeEventListener('selectionchange', scheduleSelectionButtonUpdate);
   window.removeEventListener('resize', handleResize);
   window.removeEventListener('popstate', handlePageUrlChanged);
   window.removeEventListener('hashchange', handlePageUrlChanged);
   if (navigationTimer) {
     clearInterval(navigationTimer);
+  }
+  if (selectionTimer) {
+    clearTimeout(selectionTimer);
   }
   if (composerFocusTimer) {
     clearTimeout(composerFocusTimer);
@@ -640,7 +506,7 @@ onUnmounted(() => {
 <template>
   <div class="bac-shell">
     <button
-      v-if="selectionButton.visible && !isOpen"
+      v-if="selectionButton.visible"
       class="bac-selection-chip"
       :style="{ left: `${selectionButton.x}px`, top: `${selectionButton.y}px` }"
       title="引用选中内容"
@@ -878,37 +744,13 @@ onUnmounted(() => {
         </div>
 
         <article
-          v-for="message in messages"
+          v-for="message in visibleMessages"
           :key="message.id"
           class="bac-message"
           :class="message.role"
           :data-message-id="message.id"
         >
           <div class="bac-message-role">{{ message.role === 'user' ? 'You' : 'Copilot' }}</div>
-          <div
-            v-if="message.role === 'assistant' && message.toolCalls?.length"
-            class="bac-tool-call-list"
-          >
-            <div
-              v-for="toolCall in message.toolCalls"
-              :key="toolCall.id || `${toolCall.toolName}-${toolCall.summary}`"
-              class="bac-tool-call-card"
-              :class="toolCall.status || 'planned'"
-            >
-              <div class="bac-tool-call-head">
-                <span>{{ getToolCallLabel(toolCall.toolName) }}</span>
-                <small>{{ getToolCallStatusLabel(toolCall.status) }}</small>
-              </div>
-              <p>{{ toolCall.summary }}</p>
-              <div v-if="getToolCallResultSummary(toolCall)" class="bac-tool-call-result">
-                {{ getToolCallResultSummary(toolCall) }}
-              </div>
-              <details v-if="shouldShowToolCallDetails(toolCall)" class="bac-tool-call-details">
-                <summary>查看原始结果</summary>
-                <pre>{{ getToolCallDetails(toolCall) }}</pre>
-              </details>
-            </div>
-          </div>
           <div
             v-if="message.role === 'assistant' && message.content"
             class="bac-message-content markdown"
@@ -952,8 +794,6 @@ onUnmounted(() => {
         </article>
 
         <div v-if="shouldShowThinking" class="bac-thinking" aria-live="polite">
-          <span />
-          <span />
           <span />
         </div>
 

@@ -161,7 +161,8 @@ async function fetchToolPlan(request: ChatStreamRequest, signal: AbortSignal) {
 async function executePlannedToolCalls(
   port: RuntimePort,
   tabId: number | undefined,
-  toolCalls: AgentToolCall[]
+  toolCalls: AgentToolCall[],
+  request: ChatStreamRequest
 ) {
   const toolResults: AgentToolResult[] = [];
 
@@ -191,7 +192,10 @@ async function executePlannedToolCalls(
         type: 'bac-execute-browser-action',
         request: {
           action: call.toolName,
-          input: call.input
+          input:
+            call.toolName === 'browser.read_selected_text' && request.context.selection
+              ? { selection: request.context.selection }
+              : call.input
         }
       })) as BrowserActionResponse;
     } catch (error) {
@@ -242,7 +246,7 @@ async function streamChat(
   let toolResults: AgentToolResult[] = [];
   try {
     const toolCalls = await fetchToolPlan(request, signal);
-    toolResults = await executePlannedToolCalls(port, tabId, toolCalls);
+    toolResults = await executePlannedToolCalls(port, tabId, toolCalls, request);
   } catch (error) {
     debugLog('Tool planning failed; continuing with direct chat stream.', error);
   }

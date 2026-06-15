@@ -2,7 +2,8 @@ import type {
   BrowserActionRequest,
   BrowserActionResponse,
   BrowserTextMatch,
-  BrowserTextQueryInput
+  BrowserTextQueryInput,
+  SelectionReference
 } from '@bac/shared';
 import { collectPageContext, getCurrentSelection } from './pageContext';
 
@@ -138,6 +139,20 @@ function parseTextInput(input: unknown): BrowserTextQueryInput {
   };
 }
 
+function parseSelectionInput(input: unknown): SelectionReference | null {
+  const value = input as { selection?: Partial<SelectionReference> } | undefined;
+  const selection = value?.selection;
+  if (
+    typeof selection?.text === 'string' &&
+    typeof selection.pageUrl === 'string' &&
+    typeof selection.pageTitle === 'string' &&
+    typeof selection.capturedAt === 'string'
+  ) {
+    return selection as SelectionReference;
+  }
+  return null;
+}
+
 async function executeBrowserAction(request: BrowserActionRequest): Promise<unknown> {
   const context = collectPageContext(getCurrentSelection()?.reference);
 
@@ -165,7 +180,7 @@ async function executeBrowserAction(request: BrowserActionRequest): Promise<unkn
 
   if (request.action === 'browser.read_selected_text') {
     return {
-      selection: context.selection || null
+      selection: context.selection || parseSelectionInput(request.input)
     };
   }
 
