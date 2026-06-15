@@ -565,18 +565,12 @@ export const useCopilotStore = defineStore('copilot', {
         context,
         contextScope: this.contextScope
       };
-      const assistantMessage: ChatMessage = {
-        id: createId('assistant'),
-        role: 'assistant',
-        content: '',
-        createdAt: new Date().toISOString()
-      };
 
       if (appendUserMessage) {
         this.messages.push(userMessage);
       }
-      this.messages.push(assistantMessage);
-      const assistantIndex = this.messages.length - 1;
+      let assistantIndex = -1;
+      let assistantMessageId = createId('assistant');
       this.isStreaming = true;
       this.persistConversationSoon();
 
@@ -598,19 +592,50 @@ export const useCopilotStore = defineStore('copilot', {
         selectedTextLength: context.selection?.text.length ?? 0
       });
 
+      const ensureAssistantMessage = () => {
+        if (assistantIndex >= 0 && this.messages[assistantIndex]) {
+          return assistantIndex;
+        }
+
+        const assistantMessage: ChatMessage = {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          createdAt: new Date().toISOString()
+        };
+        this.messages.push(assistantMessage);
+        assistantIndex = this.messages.length - 1;
+        return assistantIndex;
+      };
+
       const appendAssistantContent = (contentDelta: string) => {
-        const current = this.messages[assistantIndex];
+        const nextAssistantIndex = ensureAssistantMessage();
+        const current = this.messages[nextAssistantIndex];
         if (!current) return;
 
-        this.messages[assistantIndex] = {
+        this.messages[nextAssistantIndex] = {
           ...current,
           content: `${current.content}${contentDelta}`
         };
         this.persistConversationSoon();
       };
 
-      const updateAssistantToolCall = (toolCall: ToolCallPreview) => {
+      const updateAssistantId = (messageId: string) => {
+        assistantMessageId = messageId;
+        if (assistantIndex < 0) return;
         const current = this.messages[assistantIndex];
+        if (!current) return;
+
+        this.messages[assistantIndex] = {
+          ...current,
+          id: messageId
+        };
+        this.persistConversationSoon();
+      };
+
+      const updateAssistantToolCall = (toolCall: ToolCallPreview) => {
+        const nextAssistantIndex = ensureAssistantMessage();
+        const current = this.messages[nextAssistantIndex];
         if (!current) return;
 
         const key = toolCall.id || `${toolCall.toolName}:${toolCall.summary}`;
@@ -628,7 +653,7 @@ export const useCopilotStore = defineStore('copilot', {
           nextToolCalls.push(toolCall);
         }
 
-        this.messages[assistantIndex] = {
+        this.messages[nextAssistantIndex] = {
           ...current,
           toolCalls: nextToolCalls
         };
@@ -643,14 +668,7 @@ export const useCopilotStore = defineStore('copilot', {
 
         if (event.type === 'meta') {
           this.conversationId = event.conversationId;
-          const current = this.messages[assistantIndex];
-          if (current) {
-            this.messages[assistantIndex] = {
-              ...current,
-              id: event.messageId
-            };
-          }
-          this.persistConversationSoon();
+          updateAssistantId(event.messageId);
         }
         if (event.type === 'delta') {
           appendAssistantContent(event.content);
@@ -680,9 +698,6 @@ export const useCopilotStore = defineStore('copilot', {
             const message = rawMessage as ChatPortResponse;
             if (message.type === 'error') {
               this.streamError = message.message;
-              if (!this.messages[assistantIndex]?.content) {
-                appendAssistantContent(message.message);
-              }
               debugLog(this.debugLogging, 'Received stream port error.', {
                 message: message.message
               });
@@ -697,8 +712,9 @@ export const useCopilotStore = defineStore('copilot', {
           });
 
           activePort.onDisconnect.addListener(() => {
-            if (this.isStreaming && !this.messages[assistantIndex]?.content) {
-              appendAssistantContent('流式连接已中断，请稍后重试。');
+            const current = assistantIndex >= 0 ? this.messages[assistantIndex] : undefined;
+            if (this.isStreaming && !current?.content && !current?.toolCalls?.length) {
+              this.streamError = '流式连接已中断，请稍后重试。';
             }
             debugLog(this.debugLogging, 'Chat stream port disconnected.');
             settle();
@@ -710,10 +726,11 @@ export const useCopilotStore = defineStore('copilot', {
         const message =
           (error as Error).message || '请求失败，请确认本地 API 已启动。';
         this.streamError = message;
-        if (!this.messages[assistantIndex].content) {
-          appendAssistantContent(message);
-        }
       } finally {
+        const current = assistantIndex >= 0 ? this.messages[assistantIndex] : undefined;
+        if (current && !current.content && !current.toolCalls?.length) {
+          this.messages.splice(assistantIndex, 1);
+        }
         this.isStreaming = false;
         activePort = undefined;
         await this.persistConversation();
@@ -721,6 +738,27 @@ export const useCopilotStore = defineStore('copilot', {
           await this.loadConversations();
         }
       }
+    },
+
+    async resendUserMessage(messageId: string, content: string, context: PageContext) {
+      const nextContent = content.trim();
+      if (!nextContent || this.isStreaming) return;
+
+      const userIndex = this.messages.findIndex((message) => message.id === messageId && message.role === 'user');
+      if (userIndex < 0) return;
+
+      this.streamError = null;
+      this.draft = '';
+      this.messages[userIndex] = {
+        ...this.messages[userIndex],
+        content: nextContent,
+        context,
+        contextScope: this.contextScope,
+        createdAt: new Date().toISOString()
+      };
+      this.messages.splice(userIndex + 1);
+      await this.persistConversation();
+      await this.sendMessageContent(nextContent, context, false);
     },
 
     async retryAssistantMessage(messageId: string, context: PageContext) {

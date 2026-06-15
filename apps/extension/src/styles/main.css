@@ -136,8 +136,7 @@ textarea {
   gap: 6px;
 }
 
-.bac-icon-button,
-.bac-copy {
+.bac-icon-button {
   align-items: center;
   background: rgba(255, 255, 255, 0.46);
   border: 1px solid rgba(31, 35, 40, 0.08);
@@ -151,8 +150,7 @@ textarea {
   width: 30px;
 }
 
-.bac-icon-button:hover,
-.bac-copy:hover {
+.bac-icon-button:hover {
   background: rgba(255, 255, 255, 0.78);
   color: #111318;
 }
@@ -163,14 +161,12 @@ textarea {
   color: #0c7d62;
 }
 
-.bac-icon-button:disabled,
-.bac-copy:disabled {
+.bac-icon-button:disabled {
   color: rgba(31, 35, 40, 0.24);
   cursor: not-allowed;
 }
 
-.bac-icon-button:disabled:hover,
-.bac-copy:disabled:hover {
+.bac-icon-button:disabled:hover {
   background: rgba(255, 255, 255, 0.46);
   color: rgba(31, 35, 40, 0.24);
 }
@@ -549,6 +545,8 @@ textarea {
   min-height: 0;
   overflow: auto;
   padding: 8px 14px 14px;
+  position: relative;
+  scroll-behavior: smooth;
   scrollbar-width: thin;
 }
 
@@ -592,9 +590,23 @@ textarea {
 }
 
 .bac-message {
+  animation: bac-message-in 180ms ease both;
   display: flex;
   flex-direction: column;
   margin-bottom: 14px;
+  scroll-margin-top: 10px;
+}
+
+@keyframes bac-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .bac-message-role {
@@ -748,7 +760,7 @@ textarea {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
   justify-content: flex-start;
   margin: 7px 0 0 2px;
 }
@@ -757,14 +769,19 @@ textarea {
   align-items: center;
   background: rgba(255, 255, 255, 0.48);
   border: 1px solid rgba(31, 35, 40, 0.07);
-  border-radius: 999px;
+  border-radius: 8px;
   color: rgba(31, 35, 40, 0.58);
   cursor: pointer;
   display: inline-flex;
-  font-size: 11px;
-  gap: 4px;
-  height: 24px;
-  padding: 0 8px;
+  height: 26px;
+  justify-content: center;
+  padding: 0;
+  width: 26px;
+}
+
+.bac-user-actions {
+  justify-content: flex-end;
+  margin: 6px 2px 0 0;
 }
 
 .bac-message-actions button:hover {
@@ -776,6 +793,71 @@ textarea {
   background: rgba(16, 163, 127, 0.12);
   border-color: rgba(16, 163, 127, 0.24);
   color: #0c7d62;
+}
+
+.bac-thinking {
+  align-items: center;
+  animation: bac-message-in 180ms ease both;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(31, 35, 40, 0.07);
+  border-radius: 14px 14px 14px 4px;
+  display: inline-flex;
+  gap: 5px;
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  width: max-content;
+}
+
+.bac-thinking span {
+  animation: bac-thinking-pulse 980ms ease-in-out infinite;
+  background: rgba(31, 35, 40, 0.42);
+  border-radius: 999px;
+  display: block;
+  height: 6px;
+  width: 6px;
+}
+
+.bac-thinking span:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.bac-thinking span:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+@keyframes bac-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.36;
+    transform: translateY(0);
+  }
+
+  50% {
+    opacity: 0.9;
+    transform: translateY(-3px);
+  }
+}
+
+.bac-scroll-bottom {
+  align-items: center;
+  background: rgba(17, 19, 24, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  border-radius: 999px;
+  bottom: 10px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  height: 30px;
+  justify-content: center;
+  margin: -38px auto 8px;
+  position: sticky;
+  width: 30px;
+  z-index: 2;
+}
+
+.bac-scroll-bottom:hover {
+  background: #0c7d62;
 }
 
 .markdown {
@@ -829,7 +911,7 @@ textarea {
 .bac-composer {
   border-top: 1px solid rgba(31, 35, 40, 0.07);
   grid-row: 5;
-  padding: 10px 12px 12px;
+  padding: 9px 12px 12px;
 }
 
 .bac-reference {
@@ -874,10 +956,23 @@ textarea {
 .bac-recommendations {
   display: flex;
   gap: 7px;
-  margin-bottom: 9px;
+  margin-bottom: 8px;
   overflow-x: auto;
   padding-bottom: 1px;
   scrollbar-width: none;
+}
+
+.bac-suggestion-pop-enter-active,
+.bac-suggestion-pop-leave-active {
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.bac-suggestion-pop-enter-from,
+.bac-suggestion-pop-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .bac-recommendations::-webkit-scrollbar {
@@ -903,45 +998,33 @@ textarea {
   color: #0c7d62;
 }
 
-.bac-composer-row {
+.bac-editing-note {
   align-items: center;
+  color: rgba(31, 35, 40, 0.58);
   display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  margin-bottom: 9px;
-}
-
-.bac-scope-tabs {
-  background: rgba(255, 255, 255, 0.42);
-  border: 1px solid rgba(31, 35, 40, 0.07);
-  border-radius: 999px;
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-}
-
-.bac-scope-tabs button {
-  background: transparent;
-  border: 0;
-  border-radius: 999px;
-  color: rgba(31, 35, 40, 0.56);
-  cursor: pointer;
   font-size: 11px;
-  font-weight: 650;
-  height: 24px;
-  min-width: 42px;
-  padding: 0 9px;
+  font-weight: 700;
+  justify-content: space-between;
+  margin: 0 2px 7px;
 }
 
-.bac-scope-tabs button.active {
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.08);
+.bac-editing-note button {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  border-radius: 7px;
+  color: rgba(31, 35, 40, 0.58);
+  cursor: pointer;
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.bac-editing-note button:hover {
+  background: rgba(255, 255, 255, 0.86);
   color: #111318;
-}
-
-.bac-scope-tabs button:disabled {
-  color: rgba(31, 35, 40, 0.24);
-  cursor: not-allowed;
 }
 
 .bac-error {
@@ -958,11 +1041,11 @@ textarea {
   align-items: end;
   background: rgba(255, 255, 255, 0.74);
   border: 1px solid rgba(31, 35, 40, 0.1);
-  border-radius: 14px;
+  border-radius: 16px;
   display: grid;
   gap: 8px;
   grid-template-columns: 1fr auto;
-  padding: 9px 9px 9px 11px;
+  padding: 10px 10px 10px 12px;
 }
 
 .bac-input-wrap:focus-within {

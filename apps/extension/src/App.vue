@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ArrowDown,
   Bug,
   Check,
   Copy,
@@ -21,8 +22,8 @@ import {
   X
 } from 'lucide-vue-next';
 import { storeToRefs } from 'pinia';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { QUICK_ACTIONS, type ContextScope, type QuickAction, type ToolCallPreview } from '@bac/shared';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { QUICK_ACTIONS, type ChatMessage, type ContextScope, type QuickAction, type ToolCallPreview } from '@bac/shared';
 import { useCopilotStore } from './stores/copilot';
 import { collectPageContext, getCurrentSelection } from './utils/pageContext';
 import { renderMarkdown } from './utils/markdown';
@@ -57,8 +58,7 @@ const {
   draft,
   selection,
   isStreaming,
-  streamError,
-  contextScope
+  streamError
 } = storeToRefs(store);
 
 const launcherPosition = ref<Point>({ x: 0, y: 0 });
@@ -68,6 +68,12 @@ const currentPageUrl = ref(location.href);
 const editingConversationId = ref<string | null>(null);
 const editingTitle = ref('');
 const toolQuery = ref('');
+const messagesViewport = ref<HTMLElement | null>(null);
+const composerTextarea = ref<HTMLTextAreaElement | null>(null);
+const isComposerFocused = ref(false);
+const showScrollToBottom = ref(false);
+const editingUserMessageId = ref<string | null>(null);
+const pinnedUserMessageId = ref<string | null>(null);
 const dragState = ref<{
   target: DragTarget;
   pointerId: number;
@@ -76,19 +82,35 @@ const dragState = ref<{
   moved: boolean;
 } | null>(null);
 let navigationTimer: ReturnType<typeof setInterval> | undefined;
+let composerFocusTimer: number | undefined;
 
-const recommendedActions = computed(() =>
-  QUICK_ACTIONS.filter((action) =>
-    ['explain-selection', 'summarize-context', 'analyze-page', 'extract-key-info'].includes(
-      action.id
-    )
-  )
-);
+const contextualActions = computed(() => {
+  const allowedIds = selection.value
+    ? ['explain-selection', 'extract-key-info']
+    : ['summarize-context', 'analyze-page', 'extract-key-info'];
+  return QUICK_ACTIONS.filter((action) => allowedIds.includes(action.id));
+});
 
 const canSend = computed(() => draft.value.trim().length > 0 && !isStreaming.value);
 const hasConversationContent = computed(
   () => messages.value.length > 0 || draft.value.trim().length > 0 || Boolean(streamError.value)
 );
+const shouldShowContextualActions = computed(
+  () =>
+    !isStreaming.value &&
+    !editingUserMessageId.value &&
+    contextualActions.value.length > 0 &&
+    (Boolean(selection.value) || (isComposerFocused.value && !draft.value.trim()))
+);
+const hasVisibleStreamingAnswer = computed(() => {
+  if (!isStreaming.value) return false;
+  const lastMessage = messages.value[messages.value.length - 1];
+  return Boolean(
+    lastMessage?.role === 'assistant' &&
+      (lastMessage.content.trim() || lastMessage.toolCalls?.length)
+  );
+});
+const shouldShowThinking = computed(() => isStreaming.value && !hasVisibleStreamingAnswer.value);
 const activeConversation = computed(() => {
   const activeId = conversationId?.value;
   if (!activeId) return undefined;
@@ -412,6 +434,76 @@ async function removeConversation(id: string) {
   }
 }
 
+function inferContextScope(content: string, action?: QuickAction): ContextScope {
+  if (action) return action.preferredScope;
+
+  const normalized = content.trim().toLowerCase();
+  if (
+    selection.value &&
+    /(选中|所选|这段|这部分|引用|selection|selected)/i.test(normalized)
+  ) {
+    return 'selection';
+  }
+
+  if (/(整页|全文|全部页面|整个页面|完整页面|所有内容|full page|whole page)/i.test(normalized)) {
+    return 'full-page';
+  }
+
+  return 'visible-page';
+}
+
+function getMessageElement(messageId: string) {
+  return messagesViewport.value?.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`) || null;
+}
+
+function updateScrollButtonState() {
+  const viewport = messagesViewport.value;
+  if (!viewport) {
+    showScrollToBottom.value = false;
+    return;
+  }
+
+  const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+  showScrollToBottom.value = distanceFromBottom > 80;
+}
+
+function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
+  const viewport = messagesViewport.value;
+  if (!viewport) return;
+
+  viewport.scrollTo({
+    top: viewport.scrollHeight,
+    behavior
+  });
+  window.setTimeout(updateScrollButtonState, 180);
+}
+
+function scrollMessageToTop(messageId: string, behavior: ScrollBehavior = 'smooth') {
+  const viewport = messagesViewport.value;
+  const element = getMessageElement(messageId);
+  if (!viewport || !element) return;
+
+  const nextTop = element.offsetTop - viewport.offsetTop - 10;
+  viewport.scrollTo({
+    top: Math.max(0, nextTop),
+    behavior
+  });
+  window.setTimeout(updateScrollButtonState, 220);
+}
+
+function beginEditUserMessage(message: ChatMessage) {
+  if (isStreaming.value || message.role !== 'user') return;
+  editingUserMessageId.value = message.id;
+  draft.value = message.content;
+  void nextTick(() => composerTextarea.value?.focus());
+}
+
+function cancelEditUserMessage() {
+  editingUserMessageId.value = null;
+  draft.value = '';
+  composerTextarea.value?.focus();
+}
+
 function handlePageUrlChanged() {
   if (currentPageUrl.value === location.href) return;
 
@@ -425,13 +517,24 @@ async function sendMessage(action?: QuickAction) {
 
   if (action) {
     draft.value = action.prompt;
-    store.setContextScope(action.preferredScope);
   }
 
-  if (!draft.value.trim()) return;
+  const content = draft.value.trim();
+  if (!content) return;
 
+  store.setContextScope(inferContextScope(content, action));
   const pageContext = collectPageContext(selection.value?.reference);
-  await store.sendCurrentDraft(pageContext);
+  const editingId = editingUserMessageId.value;
+  editingUserMessageId.value = null;
+
+  if (editingId) {
+    pinnedUserMessageId.value = editingId;
+    void store.resendUserMessage(editingId, content, pageContext);
+    void nextTick(() => scrollMessageToTop(editingId));
+    return;
+  }
+
+  void store.sendCurrentDraft(pageContext);
 }
 
 async function retryMessage(messageId: string) {
@@ -439,16 +542,28 @@ async function retryMessage(messageId: string) {
   await store.retryAssistantMessage(messageId, pageContext);
 }
 
-function setScope(scope: ContextScope) {
-  if (scope === 'selection' && !selection.value) return;
-  store.setContextScope(scope);
-}
-
 function handleKeydown(event: KeyboardEvent) {
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+  if (event.key !== 'Enter') return;
+  if (event.shiftKey) return;
+
+  if (!event.isComposing) {
     event.preventDefault();
     void sendMessage();
   }
+}
+
+function handleComposerFocus() {
+  if (composerFocusTimer) {
+    clearTimeout(composerFocusTimer);
+    composerFocusTimer = undefined;
+  }
+  isComposerFocused.value = true;
+}
+
+function handleComposerBlur() {
+  composerFocusTimer = window.setTimeout(() => {
+    isComposerFocused.value = false;
+  }, 140);
 }
 
 function handleResize() {
@@ -459,6 +574,42 @@ function handleResize() {
     Math.min(panelHeight, window.innerHeight - 24)
   );
 }
+
+watch(
+  () => messages.value.map((message) => `${message.id}:${message.role}`).join('|'),
+  async () => {
+    await nextTick();
+    const lastUserMessage = [...messages.value].reverse().find((message) => message.role === 'user');
+    if (!lastUserMessage || pinnedUserMessageId.value === lastUserMessage.id) {
+      updateScrollButtonState();
+      return;
+    }
+
+    if (isStreaming.value) {
+      pinnedUserMessageId.value = lastUserMessage.id;
+      scrollMessageToTop(lastUserMessage.id);
+      return;
+    }
+
+    updateScrollButtonState();
+  }
+);
+
+watch(
+  () => messages.value[messages.value.length - 1]?.content,
+  async () => {
+    await nextTick();
+    updateScrollButtonState();
+  }
+);
+
+watch(isStreaming, async (streaming) => {
+  await nextTick();
+  if (!streaming) {
+    pinnedUserMessageId.value = null;
+    updateScrollButtonState();
+  }
+});
 
 onMounted(() => {
   setInitialPositions();
@@ -479,6 +630,9 @@ onUnmounted(() => {
   window.removeEventListener('hashchange', handlePageUrlChanged);
   if (navigationTimer) {
     clearInterval(navigationTimer);
+  }
+  if (composerFocusTimer) {
+    clearTimeout(composerFocusTimer);
   }
 });
 </script>
@@ -716,14 +870,20 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="bac-messages">
+      <section ref="messagesViewport" class="bac-messages" @scroll.passive="updateScrollButtonState">
         <div v-if="messages.length === 0" class="bac-empty">
           <div class="bac-empty-mark"><Sparkles :size="25" /></div>
           <h2>从当前页面开始</h2>
           <p>划选内容或直接输入任务，我会结合页面上下文给出回答。</p>
         </div>
 
-        <article v-for="message in messages" :key="message.id" class="bac-message" :class="message.role">
+        <article
+          v-for="message in messages"
+          :key="message.id"
+          class="bac-message"
+          :class="message.role"
+          :data-message-id="message.id"
+        >
           <div class="bac-message-role">{{ message.role === 'user' ? 'You' : 'Copilot' }}</div>
           <div
             v-if="message.role === 'assistant' && message.toolCalls?.length"
@@ -750,16 +910,24 @@ onUnmounted(() => {
             </div>
           </div>
           <div
-            v-if="message.role === 'assistant' && (message.content || !message.toolCalls?.length)"
+            v-if="message.role === 'assistant' && message.content"
             class="bac-message-content markdown"
             v-html="renderMarkdown(message.content)"
           />
-          <div v-else class="bac-message-content">{{ message.content }}</div>
+          <div v-else-if="message.role === 'user'" class="bac-message-content">{{ message.content }}</div>
+
+          <div v-if="message.role === 'user' && !isStreaming" class="bac-message-actions bac-user-actions">
+            <button title="复制" type="button" @click="store.copyMessage(message.id)">
+              <Copy :size="13" />
+            </button>
+            <button title="编辑并重新发送" type="button" @click="beginEditUserMessage(message)">
+              <Pencil :size="13" />
+            </button>
+          </div>
 
           <div v-if="message.role === 'assistant' && message.content && !isStreaming" class="bac-message-actions">
             <button title="复制" type="button" @click="store.copyMessage(message.id)">
               <Copy :size="13" />
-              <span>复制</span>
             </button>
             <button
               :class="{ active: message.feedbackRating === 'up' }"
@@ -768,7 +936,6 @@ onUnmounted(() => {
               @click="store.rateAssistantMessage(message.id, 'up')"
             >
               <ThumbsUp :size="13" />
-              <span>点赞</span>
             </button>
             <button
               :class="{ active: message.feedbackRating === 'down' }"
@@ -777,14 +944,28 @@ onUnmounted(() => {
               @click="store.rateAssistantMessage(message.id, 'down')"
             >
               <ThumbsDown :size="13" />
-              <span>点踩</span>
             </button>
             <button title="重新回答" type="button" @click="retryMessage(message.id)">
               <RotateCcw :size="13" />
-              <span>重新回答</span>
             </button>
           </div>
         </article>
+
+        <div v-if="shouldShowThinking" class="bac-thinking" aria-live="polite">
+          <span />
+          <span />
+          <span />
+        </div>
+
+        <button
+          v-if="showScrollToBottom"
+          class="bac-scroll-bottom"
+          title="滚动到底部"
+          type="button"
+          @click="scrollToBottom()"
+        >
+          <ArrowDown :size="15" />
+        </button>
       </section>
 
       <footer class="bac-composer">
@@ -796,46 +977,37 @@ onUnmounted(() => {
           <p>{{ selection.reference.text }}</p>
         </section>
 
-        <div class="bac-recommendations" aria-label="推荐功能">
-          <button
-            v-for="action in recommendedActions"
-            :key="action.id"
-            type="button"
-            @click="sendMessage(action)"
-          >
-            {{ action.label }}
-          </button>
-        </div>
-
-        <div class="bac-composer-row">
-          <div class="bac-scope-tabs" aria-label="上下文范围">
+        <Transition name="bac-suggestion-pop">
+          <div v-if="shouldShowContextualActions" class="bac-recommendations" aria-label="推荐功能">
             <button
-              :class="{ active: contextScope === 'selection' }"
-              :disabled="!selection"
-              @click="setScope('selection')"
+              v-for="action in contextualActions"
+              :key="action.id"
+              type="button"
+              @mousedown.prevent
+              @click="sendMessage(action)"
             >
-              选中
-            </button>
-            <button :class="{ active: contextScope === 'visible-page' }" @click="setScope('visible-page')">
-              可见
-            </button>
-            <button :class="{ active: contextScope === 'full-page' }" @click="setScope('full-page')">
-              整页
+              {{ action.label }}
             </button>
           </div>
-
-          <button class="bac-copy" type="button" title="复制最近回复" @click="store.copyLastAssistantMessage">
-            <Copy :size="14" />
-          </button>
-        </div>
+        </Transition>
 
         <div v-if="streamError" class="bac-error">{{ streamError }}</div>
 
+        <div v-if="editingUserMessageId" class="bac-editing-note">
+          <span>正在编辑提问</span>
+          <button title="取消编辑" type="button" @click="cancelEditUserMessage">
+            <X :size="12" />
+          </button>
+        </div>
+
         <div class="bac-input-wrap">
           <textarea
+            ref="composerTextarea"
             v-model="draft"
             rows="2"
             placeholder="询问当前页面，或描述你想完成的任务"
+            @focus="handleComposerFocus"
+            @blur="handleComposerBlur"
             @keydown="handleKeydown"
           />
           <button
