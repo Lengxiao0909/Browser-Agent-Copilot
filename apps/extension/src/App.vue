@@ -118,6 +118,9 @@ const hasVisibleStreamingAnswer = computed(() => {
   );
 });
 const shouldShowThinking = computed(() => isStreaming.value && !hasVisibleStreamingAnswer.value);
+const scrollControlMode = computed<'streaming' | 'arrow'>(() =>
+  isStreaming.value ? 'streaming' : 'arrow'
+);
 const activeConversation = computed(() => {
   const activeId = conversationId?.value;
   if (!activeId) return undefined;
@@ -344,7 +347,9 @@ function scrollMessageToTop(messageId: string, behavior: ScrollBehavior = 'smoot
   const element = getMessageElement(messageId);
   if (!viewport || !element) return;
 
-  const nextTop = element.offsetTop - viewport.offsetTop - 10;
+  const viewportRect = viewport.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  const nextTop = viewport.scrollTop + elementRect.top - viewportRect.top - 10;
   viewport.scrollTo({
     top: Math.max(0, nextTop),
     behavior
@@ -391,7 +396,7 @@ async function sendMessage(action?: QuickAction) {
   if (editingId) {
     pinnedUserMessageId.value = editingId;
     void store.resendUserMessage(editingId, content, pageContext);
-    void nextTick(() => scrollMessageToTop(editingId));
+    requestAnimationFrame(() => scrollMessageToTop(editingId));
     return;
   }
 
@@ -448,7 +453,7 @@ watch(
 
     if (isStreaming.value) {
       pinnedUserMessageId.value = lastUserMessage.id;
-      scrollMessageToTop(lastUserMessage.id);
+      requestAnimationFrame(() => scrollMessageToTop(lastUserMessage.id));
       return;
     }
 
@@ -800,11 +805,17 @@ onUnmounted(() => {
         <button
           v-if="showScrollToBottom"
           class="bac-scroll-bottom"
+          :class="{ streaming: scrollControlMode === 'streaming' }"
           title="滚动到底部"
           type="button"
           @click="scrollToBottom()"
         >
-          <ArrowDown :size="15" />
+          <span v-if="scrollControlMode === 'streaming'" class="bac-scroll-dots" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+          <ArrowDown v-else :size="15" />
         </button>
       </section>
 

@@ -749,6 +749,49 @@ textarea {
   background: #0c7d62;
 }
 
+.bac-scroll-bottom.streaming {
+  background: rgba(17, 19, 24, 0.76);
+  cursor: pointer;
+}
+
+.bac-scroll-dots {
+  align-items: center;
+  display: inline-flex;
+  gap: 3px;
+  height: 14px;
+  justify-content: center;
+}
+
+.bac-scroll-dots i {
+  animation: bac-scroll-dot-float 900ms ease-in-out infinite;
+  background: currentColor;
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  width: 4px;
+}
+
+.bac-scroll-dots i:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.bac-scroll-dots i:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+@keyframes bac-scroll-dot-float {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: translateY(2px);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
 .markdown {
   white-space: normal;
 }
