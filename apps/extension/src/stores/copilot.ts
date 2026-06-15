@@ -30,6 +30,14 @@ interface PersistedConversation {
   updatedAt: string;
 }
 
+interface LocalConversationRecord extends PersistedConversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  pageUrl?: string;
+  pageTitle?: string;
+}
+
 interface PendingToolConfirmation {
   action: BrowserActionName;
   input?: unknown;
@@ -92,9 +100,11 @@ const debugLoggingKey = 'bac.debugLogging';
 const clientIdKey = 'bac.clientId';
 const llmModelsKey = 'bac.llmModels';
 const selectedLlmModelIdKey = 'bac.selectedLlmModelId';
+const localConversationHistoryKey = 'bac.localConversationHistory';
 const maxPersistedMessages = 40;
 const maxPersistedContentLength = 20000;
 const maxPersistedContextTextLength = 12000;
+const maxLocalConversationHistory = 50;
 let storageListenerInstalled = false;
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 let activePort: ReturnType<typeof browser.runtime.connect> | undefined;
@@ -221,6 +231,150 @@ function sanitizeLlmModel(value: unknown): UserLlmModel | null {
     createdAt: typeof model.createdAt === 'string' ? model.createdAt : new Date().toISOString(),
     updatedAt: typeof model.updatedAt === 'string' ? model.updatedAt : new Date().toISOString()
   };
+}
+
+function normalizeHistoryText(text?: string) {
+  return (text || '').replace(/\s+/g, ' ').trim();
+}
+
+function deriveLocalConversationTitle(messages: ChatMessage[]) {
+  const firstUserMessage = messages.find((message) => message.role === 'user' && message.content.trim());
+  const title = normalizeHistoryText(firstUserMessage?.content);
+  if (title) {
+    return title.length > 34 ? `${title.slice(0, 34)}...` : title;
+  }
+
+  const pageTitle = messages.find((message) => message.context?.title)?.context?.title;
+  return normalizeHistoryText(pageTitle) || '新对话';
+}
+
+function getLastVisibleMessage(messages: ChatMessage[]) {
+  return [...messages]
+    .reverse()
+    .find((message) => (message.role === 'user' || message.role === 'assistant') && message.content.trim());
+}
+
+function getLatestPageContext(messages: ChatMessage[]) {
+  return [...messages].reverse().find((message) => message.context)?.context;
+}
+
+function sanitizeLocalConversationRecord(value: unknown): LocalConversationRecord | null {
+  const record = value as Partial<LocalConversationRecord> | undefined;
+  if (
+    typeof record?.id !== 'string' ||
+    typeof record.title !== 'string' ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.updatedAt !== 'string' ||
+    !Array.isArray(record.messages)
+  ) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    conversationId: typeof record.conversationId === 'string' ? record.conversationId : record.id,
+    contextScope:
+      record.contextScope === 'selection' || record.contextScope === 'full-page'
+        ? record.contextScope
+        : 'visible-page',
+    messages: record.messages.filter((message): message is ChatMessage => {
+      const item = message as Partial<ChatMessage>;
+      return (
+        typeof item?.id === 'string' &&
+        typeof item.role === 'string' &&
+        typeof item.content === 'string' &&
+        typeof item.createdAt === 'string'
+      );
+    }),
+    updatedAt: record.updatedAt,
+    createdAt: record.createdAt,
+    title: record.title,
+    pageUrl: typeof record.pageUrl === 'string' ? record.pageUrl : undefined,
+    pageTitle: typeof record.pageTitle === 'string' ? record.pageTitle : undefined
+  };
+}
+
+function sanitizeLocalConversationHistory(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map(sanitizeLocalConversationRecord)
+        .filter((record): record is LocalConversationRecord => Boolean(record))
+    : [];
+}
+
+async function readLocalConversationHistory() {
+  const stored = await browser.storage.local.get(localConversationHistoryKey);
+  return sanitizeLocalConversationHistory(stored[localConversationHistoryKey]);
+}
+
+async function writeLocalConversationHistory(records: LocalConversationRecord[]) {
+  await browser.storage.local.set({
+    [localConversationHistoryKey]: records.slice(0, maxLocalConversationHistory)
+  });
+}
+
+function localRecordToSummary(record: LocalConversationRecord): ConversationSummary {
+  const lastMessage = getLastVisibleMessage(record.messages);
+  return {
+    id: record.id,
+    title: record.title || deriveLocalConversationTitle(record.messages),
+    pageUrl: record.pageUrl,
+    pageTitle: record.pageTitle,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    messageCount: record.messages.length,
+    lastMessage: lastMessage
+      ? {
+          role: lastMessage.role,
+          content: lastMessage.content,
+          createdAt: lastMessage.createdAt
+        }
+      : undefined
+  };
+}
+
+function mergeConversationSummaries(
+  localSummaries: ConversationSummary[],
+  serverSummaries: ConversationSummary[]
+) {
+  const byId = new Map<string, ConversationSummary>();
+
+  for (const summary of serverSummaries) {
+    byId.set(summary.id, summary);
+  }
+
+  for (const summary of localSummaries) {
+    byId.set(summary.id, {
+      ...byId.get(summary.id),
+      ...summary
+    });
+  }
+
+  return [...byId.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
+
+async function upsertLocalConversationHistory(payload: PersistedConversation) {
+  if (!payload.conversationId || !payload.messages.some((message) => message.content.trim())) return;
+
+  const history = await readLocalConversationHistory();
+  const existing = history.find((record) => record.id === payload.conversationId);
+  const pageContext = getLatestPageContext(payload.messages);
+  const nextRecord: LocalConversationRecord = {
+    id: payload.conversationId,
+    conversationId: payload.conversationId,
+    contextScope: payload.contextScope,
+    messages: payload.messages,
+    updatedAt: payload.updatedAt,
+    createdAt: existing?.createdAt || payload.messages[0]?.createdAt || payload.updatedAt,
+    title: deriveLocalConversationTitle(payload.messages),
+    pageUrl: pageContext?.url || existing?.pageUrl,
+    pageTitle: pageContext?.title || existing?.pageTitle
+  };
+
+  await writeLocalConversationHistory([
+    nextRecord,
+    ...history.filter((record) => record.id !== payload.conversationId)
+  ]);
 }
 
 function sanitizeLlmModels(value: unknown) {
@@ -358,6 +512,14 @@ export const useCopilotStore = defineStore('copilot', {
         }
       } catch (error) {
         this.streamError = (error as Error).message || '保存本地对话失败。';
+      }
+
+      try {
+        await upsertLocalConversationHistory(payload);
+      } catch (error) {
+        debugLog(this.debugLogging, 'Persisting local conversation history failed.', {
+          message: error instanceof Error ? error.message : String(error)
+        });
       }
     },
 
@@ -612,11 +774,21 @@ export const useCopilotStore = defineStore('copilot', {
       this.conversationError = null;
 
       try {
-        this.conversations = await fetchJson<ConversationSummary[]>(
-          `/conversations?clientId=${encodeURIComponent(this.clientId)}`
-        );
-      } catch (error) {
-        this.conversationError = getApiErrorMessage(error);
+        const localSummaries = (await readLocalConversationHistory()).map(localRecordToSummary);
+        this.conversations = localSummaries;
+
+        try {
+          const serverSummaries = await fetchJson<ConversationSummary[]>(
+            `/conversations?clientId=${encodeURIComponent(this.clientId)}`
+          );
+          this.conversations = mergeConversationSummaries(localSummaries, serverSummaries);
+        } catch (error) {
+          debugLog(this.debugLogging, 'Loading server conversation history failed; using local history.', {
+            message: error instanceof Error ? error.message : String(error)
+          });
+        }
+      } catch {
+        this.conversationError = '历史记录暂时不可用，请稍后重试。';
       } finally {
         this.isLoadingConversations = false;
       }
@@ -629,6 +801,21 @@ export const useCopilotStore = defineStore('copilot', {
       this.conversationError = null;
 
       try {
+        const localConversation = (await readLocalConversationHistory()).find(
+          (record) => record.id === conversationId || record.conversationId === conversationId
+        );
+
+        if (localConversation) {
+          this.conversationId = localConversation.conversationId || localConversation.id;
+          this.messages = localConversation.messages;
+          this.contextScope = localConversation.contextScope;
+          this.draft = '';
+          this.streamError = null;
+          await this.persistConversation();
+          this.closeConversationList();
+          return;
+        }
+
         const conversation = await fetchJson<ConversationDetail>(
           `/conversations/${encodeURIComponent(conversationId)}?clientId=${encodeURIComponent(
             this.clientId

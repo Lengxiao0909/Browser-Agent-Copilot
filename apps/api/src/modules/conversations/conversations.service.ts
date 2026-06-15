@@ -123,37 +123,45 @@ export class ConversationsService {
   }
 
   async listConversations(clientId?: string) {
-    const conversations = await this.prisma.conversation.findMany({
-      where: clientId ? { clientId } : undefined,
-      orderBy: { updatedAt: 'desc' },
-      include: {
-        _count: { select: { messages: true } },
-        messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 1
+    try {
+      const conversations = await this.prisma.conversation.findMany({
+        where: clientId ? { clientId } : undefined,
+        orderBy: { updatedAt: 'desc' },
+        include: {
+          _count: { select: { messages: true } },
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 1
+          }
         }
-      }
-    });
+      });
 
-    return conversations.map<ConversationSummary>((conversation) => {
-      const lastMessage = conversation.messages[0];
-      return {
-        id: conversation.id,
-        title: conversation.title || conversation.pageTitle || '新对话',
-        pageUrl: conversation.pageUrl || undefined,
-        pageTitle: conversation.pageTitle || undefined,
-        createdAt: toIsoString(conversation.createdAt),
-        updatedAt: toIsoString(conversation.updatedAt),
-        messageCount: conversation._count.messages,
-        lastMessage: lastMessage
-          ? {
-              role: toChatRole(lastMessage.role),
-              content: lastMessage.content,
-              createdAt: toIsoString(lastMessage.createdAt)
-            }
-          : undefined
-      };
-    });
+      return conversations.map<ConversationSummary>((conversation) => {
+        const lastMessage = conversation.messages[0];
+        return {
+          id: conversation.id,
+          title: conversation.title || conversation.pageTitle || '新对话',
+          pageUrl: conversation.pageUrl || undefined,
+          pageTitle: conversation.pageTitle || undefined,
+          createdAt: toIsoString(conversation.createdAt),
+          updatedAt: toIsoString(conversation.updatedAt),
+          messageCount: conversation._count.messages,
+          lastMessage: lastMessage
+            ? {
+                role: toChatRole(lastMessage.role),
+                content: lastMessage.content,
+                createdAt: toIsoString(lastMessage.createdAt)
+              }
+            : undefined
+        };
+      });
+    } catch (error) {
+      console.warn(
+        '[Browser Agent Copilot] Conversation list persistence is unavailable; returning an empty history list.',
+        error
+      );
+      return [];
+    }
   }
 
   async getConversation(id: string, clientId?: string) {
