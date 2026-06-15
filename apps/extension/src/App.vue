@@ -1,30 +1,24 @@
 <script setup lang="ts">
 import {
   ArrowDown,
-  Bug,
-  Check,
   Copy,
   History,
-  Link,
-  ListTree,
   Minus,
   Pencil,
   Plus,
   RotateCcw,
-  Search,
   Send,
+  Settings,
   Sparkles,
   Square,
   ThumbsDown,
   ThumbsUp,
-  Trash2,
-  Wrench,
   X
 } from 'lucide-vue-next';
 import { storeToRefs } from 'pinia';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { QUICK_ACTIONS, type ChatMessage, type ContextScope, type QuickAction } from '@bac/shared';
-import { useCopilotStore } from './stores/copilot';
+import { useCopilotStore, type UserLlmModel } from './stores/copilot';
 import { collectPageContext, getCurrentSelection } from './utils/pageContext';
 import { renderMarkdown } from './utils/markdown';
 
@@ -42,14 +36,10 @@ const panelHeight = 620;
 const store = useCopilotStore();
 const {
   isOpen,
-  debugLogging,
-  isConversationListOpen,
-  isToolsOpen,
-  isExecutingTool,
-  toolError,
-  toolCopyStatus,
-  lastToolResult,
-  pendingToolConfirmation,
+  llmModels,
+  selectedLlmModelId,
+  isTestingLlmModel,
+  llmConfigStatus,
   isLoadingConversations,
   conversationError,
   conversations,
@@ -65,15 +55,21 @@ const launcherPosition = ref<Point>({ x: 0, y: 0 });
 const panelPosition = ref<Point>({ x: 0, y: 0 });
 const selectionButton = ref({ visible: false, x: 0, y: 0 });
 const currentPageUrl = ref(location.href);
-const editingConversationId = ref<string | null>(null);
-const editingTitle = ref('');
-const toolQuery = ref('');
 const messagesViewport = ref<HTMLElement | null>(null);
 const composerTextarea = ref<HTMLTextAreaElement | null>(null);
 const isComposerFocused = ref(false);
 const showScrollToBottom = ref(false);
 const editingUserMessageId = ref<string | null>(null);
 const pinnedUserMessageId = ref<string | null>(null);
+const activeOverlay = ref<'history' | 'llm' | null>(null);
+const llmForm = ref({
+  id: '',
+  displayName: '',
+  providerName: '',
+  baseUrl: '',
+  apiKey: '',
+  model: ''
+});
 const dragState = ref<{
   target: DragTarget;
   pointerId: number;
@@ -96,9 +92,6 @@ const explainSelectionAction = computed(() =>
 );
 
 const canSend = computed(() => draft.value.trim().length > 0 && !isStreaming.value);
-const hasConversationContent = computed(
-  () => messages.value.length > 0 || draft.value.trim().length > 0 || Boolean(streamError.value)
-);
 const visibleMessages = computed(() =>
   messages.value.filter((message) => message.role === 'user' || message.content.trim())
 );
@@ -121,11 +114,13 @@ const shouldShowThinking = computed(() => isStreaming.value && !hasVisibleStream
 const scrollControlMode = computed<'streaming' | 'arrow'>(() =>
   isStreaming.value ? 'streaming' : 'arrow'
 );
-const activeConversation = computed(() => {
-  const activeId = conversationId?.value;
-  if (!activeId) return undefined;
-  return conversations.value.find((conversation) => conversation.id === activeId);
-});
+const currentConversationUserMessageCount = computed(
+  () => messages.value.filter((message) => message.role === 'user').length
+);
+const selectedLlmModel = computed(() =>
+  llmModels.value.find((model) => model.id === selectedLlmModelId?.value)
+);
+const isEditingSavedLlmModel = computed(() => Boolean(llmForm.value.id));
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -244,15 +239,17 @@ function useSelectionAsReference() {
   });
 }
 
-function formatConversationTime(value: string) {
+function formatRelativeTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).format(date);
+  const diffMs = Date.now() - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diffMs < minute) return '刚刚';
+  if (diffMs < hour) return `${Math.max(1, Math.floor(diffMs / minute))}分`;
+  if (diffMs < day) return `${Math.floor(diffMs / hour)}小时`;
+  return `${Math.floor(diffMs / day)}天`;
 }
 
 function getConversationPreview(content?: string) {
@@ -260,42 +257,81 @@ function getConversationPreview(content?: string) {
   return content.replace(/\s+/g, ' ').trim();
 }
 
-function getToolResultPreview() {
-  if (!lastToolResult.value) return '';
-  if (!lastToolResult.value.ok) return lastToolResult.value.error;
-  return JSON.stringify(lastToolResult.value.output, null, 2);
-}
-
-async function runTextTool(action: 'browser.find_text' | 'browser.highlight_text' | 'browser.scroll_to_text') {
-  const query = toolQuery.value.trim();
-  if (!query) return;
-  await store.executeBrowserAction(action, { query, maxMatches: 8 });
+function getConversationActivityTime(conversation: { updatedAt: string; lastMessage?: { createdAt: string } }) {
+  return conversation.lastMessage?.createdAt || conversation.updatedAt;
 }
 
 function isActiveConversation(id: string) {
   return id === conversationId?.value;
 }
 
-function startRenameConversation(id: string, title: string) {
-  editingConversationId.value = id;
-  editingTitle.value = title;
+async function openHistoryOverlay() {
+  activeOverlay.value = 'history';
+  store.clearLlmConfigStatus();
+  await store.loadConversations();
 }
 
-function cancelRenameConversation() {
-  editingConversationId.value = null;
-  editingTitle.value = '';
-}
-
-async function submitRenameConversation(id: string) {
-  await store.renameConversation(id, editingTitle.value);
-  cancelRenameConversation();
-}
-
-async function removeConversation(id: string) {
-  await store.deleteConversation(id);
-  if (editingConversationId.value === id) {
-    cancelRenameConversation();
+function resetLlmForm(model?: UserLlmModel, clearStatus = true) {
+  if (clearStatus) {
+    store.clearLlmConfigStatus();
   }
+  llmForm.value = model
+    ? {
+        id: model.id,
+        displayName: model.displayName,
+        providerName: model.providerName,
+        baseUrl: model.baseUrl,
+        apiKey: model.apiKey,
+        model: model.model
+      }
+    : {
+        id: '',
+        displayName: '',
+        providerName: '',
+        baseUrl: '',
+        apiKey: '',
+        model: ''
+      };
+}
+
+function openLlmOverlay() {
+  activeOverlay.value = 'llm';
+  resetLlmForm();
+}
+
+function closeOverlay() {
+  activeOverlay.value = null;
+}
+
+async function selectHistoryConversation(id: string) {
+  await store.selectConversation(id);
+  activeOverlay.value = null;
+}
+
+async function selectLlmModel(model: UserLlmModel) {
+  resetLlmForm(model);
+  await store.selectLlmModel(model.id);
+}
+
+async function testLlmForm() {
+  await store.testLlmModel(llmForm.value);
+}
+
+async function saveLlmForm() {
+  const saved = await store.saveLlmModel(llmForm.value);
+  if (saved) {
+    resetLlmForm(saved, false);
+  }
+}
+
+function startNewConversationFromHeader() {
+  activeOverlay.value = null;
+  void store.startNewConversation();
+}
+
+function minimizePanel() {
+  activeOverlay.value = null;
+  store.close();
 }
 
 function inferContextScope(content: string, action?: QuickAction): ContextScope {
@@ -533,6 +569,9 @@ onUnmounted(() => {
       @pointercancel.prevent="endDrag"
     >
       <Sparkles :size="23" />
+      <span v-if="currentConversationUserMessageCount" class="bac-launcher-badge">
+        {{ currentConversationUserMessageCount > 99 ? '99+' : currentConversationUserMessageCount }}
+      </span>
     </button>
 
     <aside
@@ -553,193 +592,124 @@ onUnmounted(() => {
         <div class="bac-header-actions" @pointerdown.stop>
           <button
             class="bac-icon-button"
-            :class="{ active: isConversationListOpen }"
-            title="历史对话"
+            :class="{ active: activeOverlay === 'history' }"
+            title="查看历史记录"
             type="button"
-            @click="store.toggleConversationList"
+            @click="openHistoryOverlay"
           >
             <History :size="16" />
           </button>
           <button
             class="bac-icon-button"
-            :class="{ active: isToolsOpen }"
-            title="页面工具"
+            :class="{ active: activeOverlay === 'llm' }"
+            title="相关 LLM 配置"
             type="button"
-            @click="store.toggleTools"
+            @click="openLlmOverlay"
           >
-            <Wrench :size="16" />
+            <Settings :size="16" />
           </button>
-          <button
-            class="bac-icon-button"
-            :class="{ active: debugLogging }"
-            :title="debugLogging ? '关闭调试日志' : '开启调试日志'"
-            type="button"
-            @click="store.toggleDebugLogging"
-          >
-            <Bug :size="16" />
-          </button>
-          <button class="bac-icon-button" title="新建对话" type="button" @click="store.startNewConversation">
+          <button class="bac-icon-button" title="新建对话" type="button" @click="startNewConversationFromHeader">
             <Plus :size="17" />
           </button>
-          <button
-            class="bac-icon-button"
-            title="清空对话"
-            type="button"
-            :disabled="!hasConversationContent"
-            @click="store.clearCurrentConversation"
-          >
-            <Trash2 :size="16" />
-          </button>
-          <button class="bac-icon-button" title="最小化" type="button" @click="store.close">
+          <button class="bac-icon-button" title="最小化" type="button" @click="minimizePanel">
             <Minus :size="17" />
           </button>
         </div>
       </header>
 
-      <section v-if="isToolsOpen" class="bac-tool-drawer" @pointerdown.stop>
-        <div class="bac-tool-head">
-          <div>
-            <span>页面工具</span>
-            <small>低风险浏览器动作</small>
-          </div>
-          <button
-            class="bac-tool-copy"
-            title="复制工具结果"
-            type="button"
-            :disabled="!lastToolResult"
-            @click="store.copyLastToolResult"
-          >
-            <Copy :size="12" />
-            <span>{{ toolCopyStatus === 'copied' ? '已复制' : toolCopyStatus === 'failed' ? '失败' : '复制结果' }}</span>
-          </button>
-        </div>
-
-        <div class="bac-tool-actions">
-          <button type="button" :disabled="isExecutingTool" @click="store.executeBrowserAction('browser.get_page_summary')">
-            <Sparkles :size="13" />
-            <span>摘要</span>
-          </button>
-          <button type="button" :disabled="isExecutingTool" @click="store.executeBrowserAction('browser.extract_links')">
-            <Link :size="13" />
-            <span>链接</span>
-          </button>
-          <button type="button" :disabled="isExecutingTool" @click="store.executeBrowserAction('browser.describe_page_structure')">
-            <ListTree :size="13" />
-            <span>结构</span>
-          </button>
-          <button type="button" :disabled="isExecutingTool" @click="store.executeBrowserAction('browser.read_selected_text')">
-            <Copy :size="13" />
-            <span>选区</span>
-          </button>
-        </div>
-
-        <div class="bac-tool-search">
-          <input v-model="toolQuery" type="text" placeholder="查找页面文本">
-          <button title="查找" type="button" :disabled="isExecutingTool || !toolQuery.trim()" @click="runTextTool('browser.find_text')">
-            <Search :size="13" />
-          </button>
-          <button title="高亮" type="button" :disabled="isExecutingTool || !toolQuery.trim()" @click="runTextTool('browser.highlight_text')">
-            <Sparkles :size="13" />
-          </button>
-          <button title="滚动到文本" type="button" :disabled="isExecutingTool || !toolQuery.trim()" @click="runTextTool('browser.scroll_to_text')">
-            <RotateCcw :size="13" />
-          </button>
-        </div>
-
-        <div v-if="pendingToolConfirmation" class="bac-tool-confirmation">
-          <div>
-            <span>需要确认</span>
-            <small>{{ pendingToolConfirmation.risk }} risk</small>
-          </div>
-          <p>{{ pendingToolConfirmation.summary }}</p>
-          <div class="bac-tool-confirmation-actions">
-            <button type="button" @click="store.confirmPendingToolAction">
-              <Check :size="12" />
-              <span>确认执行</span>
-            </button>
-            <button type="button" @click="store.rejectPendingToolAction">
-              <X :size="12" />
-              <span>取消</span>
-            </button>
-          </div>
-        </div>
-
-        <div v-if="toolError" class="bac-inline-error">{{ toolError }}</div>
-        <pre v-else-if="lastToolResult" class="bac-tool-result">{{ getToolResultPreview() }}</pre>
-      </section>
-
-      <section v-if="isConversationListOpen" class="bac-conversation-drawer" @pointerdown.stop>
-        <div class="bac-conversation-drawer-head">
-          <div>
-            <span>历史对话</span>
-            <small v-if="activeConversation">{{ activeConversation.title }}</small>
-          </div>
-          <button class="bac-text-button" type="button" @click="store.loadConversations">刷新</button>
-        </div>
-
-        <div v-if="conversationError" class="bac-inline-error">{{ conversationError }}</div>
-        <div v-else-if="isLoadingConversations" class="bac-conversation-empty">正在加载会话...</div>
-        <div v-else-if="conversations.length === 0" class="bac-conversation-empty">还没有服务器会话</div>
-
-        <div v-else class="bac-conversation-list">
-          <article
-            v-for="conversation in conversations"
-            :key="conversation.id"
-            class="bac-conversation-item"
-            :class="{ active: isActiveConversation(conversation.id) }"
-          >
-            <button
-              class="bac-conversation-main"
-              type="button"
-              :disabled="isStreaming || editingConversationId === conversation.id"
-              @click="store.selectConversation(conversation.id)"
-            >
-              <span class="bac-conversation-title">{{ conversation.title }}</span>
-              <span class="bac-conversation-meta">
-                {{ conversation.messageCount }} 条消息 · {{ formatConversationTime(conversation.updatedAt) }}
-              </span>
-              <span class="bac-conversation-preview">
-                {{ getConversationPreview(conversation.lastMessage?.content) }}
-              </span>
-            </button>
-
-            <div v-if="editingConversationId === conversation.id" class="bac-rename-row">
-              <input
-                v-model="editingTitle"
-                type="text"
-                maxlength="60"
-                @keydown.enter.prevent="submitRenameConversation(conversation.id)"
-                @keydown.esc.prevent="cancelRenameConversation"
-              >
-              <button class="bac-mini-icon-button" title="保存" type="button" @click="submitRenameConversation(conversation.id)">
-                <Check :size="13" />
-              </button>
-              <button class="bac-mini-icon-button" title="取消" type="button" @click="cancelRenameConversation">
-                <X :size="13" />
-              </button>
+      <Transition name="bac-overlay-pop">
+        <section v-if="activeOverlay" class="bac-overlay-window" @pointerdown.stop>
+          <div class="bac-overlay-head">
+            <div>
+              <span>{{ activeOverlay === 'history' ? '历史记录' : 'LLM 配置' }}</span>
+              <small v-if="activeOverlay === 'history'">选择一条对话继续上下文</small>
+              <small v-else>{{ selectedLlmModel ? `当前：${selectedLlmModel.displayName}` : '新增并选择模型' }}</small>
             </div>
+            <button class="bac-mini-icon-button" title="关闭" type="button" @click="closeOverlay">
+              <X :size="13" />
+            </button>
+          </div>
 
-            <div v-else class="bac-conversation-actions">
+          <div v-if="activeOverlay === 'history'" class="bac-history-pane">
+            <div v-if="conversationError" class="bac-inline-error">{{ conversationError }}</div>
+            <div v-else-if="isLoadingConversations" class="bac-conversation-empty">正在加载会话...</div>
+            <div v-else-if="conversations.length === 0" class="bac-conversation-empty">还没有历史记录</div>
+            <template v-else>
               <button
-                class="bac-mini-icon-button"
-                title="重命名"
+                v-for="conversation in conversations"
+                :key="conversation.id"
+                class="bac-history-item"
+                :class="{ active: isActiveConversation(conversation.id) }"
                 type="button"
-                @click="startRenameConversation(conversation.id, conversation.title)"
+                :disabled="isStreaming"
+                @click="selectHistoryConversation(conversation.id)"
               >
-                <Pencil :size="13" />
+                <span>
+                  <strong>{{ conversation.title }}</strong>
+                  <small>{{ getConversationPreview(conversation.lastMessage?.content) }}</small>
+                </span>
+                <em>{{ formatRelativeTime(getConversationActivityTime(conversation)) }}</em>
+              </button>
+            </template>
+          </div>
+
+          <div v-else class="bac-llm-pane">
+            <aside class="bac-llm-list">
+              <button
+                class="bac-llm-item create"
+                :class="{ active: !isEditingSavedLlmModel }"
+                type="button"
+                @click="resetLlmForm()"
+              >
+                <Plus :size="13" />
+                <span>新增模型</span>
               </button>
               <button
-                class="bac-mini-icon-button"
-                title="删除"
+                v-for="model in llmModels"
+                :key="model.id"
+                class="bac-llm-item"
+                :class="{ active: isEditingSavedLlmModel && model.id === selectedLlmModelId }"
                 type="button"
-                @click="removeConversation(conversation.id)"
+                @click="selectLlmModel(model)"
               >
-                <Trash2 :size="13" />
+                <span>{{ model.displayName }}</span>
+                <small>{{ model.providerName }}</small>
               </button>
-            </div>
-          </article>
-        </div>
-      </section>
+            </aside>
+
+            <form class="bac-llm-form" @submit.prevent="saveLlmForm">
+              <label>
+                <span>模型名称</span>
+                <input v-model="llmForm.displayName" type="text" placeholder="例如 DeepSeek Chat">
+              </label>
+              <label>
+                <span>厂商</span>
+                <input v-model="llmForm.providerName" type="text" placeholder="例如 DeepSeek / OpenAI">
+              </label>
+              <label>
+                <span>API URL</span>
+                <input v-model="llmForm.baseUrl" type="url" placeholder="https://api.example.com">
+              </label>
+              <label>
+                <span>API Key</span>
+                <input v-model="llmForm.apiKey" type="password" autocomplete="off" placeholder="仅保存在本机浏览器">
+              </label>
+              <label>
+                <span>模型</span>
+                <input v-model="llmForm.model" type="text" placeholder="例如 deepseek-chat">
+              </label>
+
+              <div v-if="llmConfigStatus" class="bac-llm-status">{{ llmConfigStatus }}</div>
+              <div class="bac-llm-actions">
+                <button type="button" :disabled="isTestingLlmModel" @click="testLlmForm">
+                  {{ isTestingLlmModel ? '测试中' : '测试' }}
+                </button>
+                <button type="submit">保存并选择</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </Transition>
 
       <section ref="messagesViewport" class="bac-messages" @scroll.passive="updateScrollButtonState">
         <div v-if="messages.length === 0" class="bac-empty">

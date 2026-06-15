@@ -1,6 +1,12 @@
 import { Body, Controller, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
-import type { ChatPlanResponse, ChatStreamEvent, ChatStreamRequest } from '@bac/shared';
+import type {
+  ChatPlanResponse,
+  ChatStreamEvent,
+  ChatStreamRequest,
+  LlmConfigTestRequest,
+  LlmConfigTestResponse
+} from '@bac/shared';
 import { ChatService } from './chat.service.js';
 
 @Controller('/chat')
@@ -10,6 +16,11 @@ export class ChatController {
   @Post('/plan')
   plan(@Body() body: ChatStreamRequest): ChatPlanResponse {
     return this.chatService.createToolPlan(body);
+  }
+
+  @Post('/test-model')
+  testModel(@Body() body: LlmConfigTestRequest): Promise<LlmConfigTestResponse> {
+    return this.chatService.testLlmConfig(body);
   }
 
   @Post('/stream')
@@ -28,9 +39,10 @@ export class ChatController {
         writeEvent(event);
       }
     } catch (error) {
+      console.warn('[Browser Agent Copilot] Chat stream failed unexpectedly.', error);
       writeEvent({
         type: 'error',
-        message: error instanceof Error ? error.message : 'Unknown stream error'
+        message: '模型响应暂时不可用，请稍后重试。'
       });
     } finally {
       response.end();

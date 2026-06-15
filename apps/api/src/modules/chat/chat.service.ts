@@ -5,6 +5,8 @@ import type {
   ChatStreamEvent,
   ChatStreamRequest,
   ContextScope,
+  LlmConfigTestRequest,
+  LlmConfigTestResponse,
   PageContext
 } from '@bac/shared';
 import { ConversationsService } from '../conversations/conversations.service.js';
@@ -141,6 +143,18 @@ export class ChatService {
     return createToolPlan(request);
   }
 
+  async testLlmConfig(request: LlmConfigTestRequest): Promise<LlmConfigTestResponse> {
+    try {
+      await this.deepseekService.testConfig(request);
+      return { ok: true, message: '连接测试成功。' };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '模型连接测试失败。'
+      };
+    }
+  }
+
   async *createStream(request: ChatStreamRequest): AsyncGenerator<ChatStreamEvent> {
     let conversationId = request.conversationId || createId('conversation');
     const messageId = createId('assistant');
@@ -192,7 +206,7 @@ export class ChatService {
     let assistantContent = '';
 
     try {
-      for await (const content of this.deepseekService.streamChat({ messages })) {
+      for await (const content of this.deepseekService.streamChat({ messages, llmConfig: request.llmConfig })) {
         assistantContent += content;
         yield { type: 'delta', content };
       }

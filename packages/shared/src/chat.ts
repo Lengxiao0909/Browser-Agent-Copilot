@@ -36,6 +36,22 @@ export interface ChatStreamRequest {
   context: PageContext;
   scope: ContextScope;
   toolResults?: AgentToolResult[];
+  llmConfig?: LlmRuntimeConfig;
+}
+
+export interface LlmRuntimeConfig {
+  providerName?: string;
+  displayName?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+}
+
+export type LlmConfigTestRequest = LlmRuntimeConfig;
+
+export interface LlmConfigTestResponse {
+  ok: boolean;
+  message: string;
 }
 
 export interface AgentToolCall {

@@ -56,6 +56,24 @@ textarea {
   width: 54px;
 }
 
+.bac-launcher-badge {
+  align-items: center;
+  background: #e5484d;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  color: #ffffff;
+  display: flex;
+  font-size: 10px;
+  font-weight: 800;
+  height: 18px;
+  justify-content: center;
+  min-width: 18px;
+  padding: 0 5px;
+  position: absolute;
+  right: -5px;
+  top: -5px;
+}
+
 .bac-launcher:hover,
 .bac-selection-chip:hover {
   filter: brightness(1.06);
@@ -89,7 +107,7 @@ textarea {
     0 8px 24px rgba(15, 23, 42, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.62);
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   height: min(620px, calc(100vh - 24px));
   overflow: hidden;
   position: fixed;
@@ -111,6 +129,270 @@ textarea {
 
 .bac-header:active {
   cursor: grabbing;
+}
+
+.bac-overlay-window {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  border-radius: 14px;
+  box-shadow:
+    0 20px 54px rgba(15, 23, 42, 0.2),
+    0 4px 16px rgba(15, 23, 42, 0.08);
+  left: 12px;
+  max-height: min(438px, calc(100% - 86px));
+  overflow: hidden;
+  position: absolute;
+  right: 12px;
+  top: 56px;
+  z-index: 4;
+}
+
+.bac-overlay-pop-enter-active,
+.bac-overlay-pop-leave-active {
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+}
+
+.bac-overlay-pop-enter-from,
+.bac-overlay-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+}
+
+.bac-overlay-head {
+  align-items: center;
+  border-bottom: 1px solid rgba(31, 35, 40, 0.07);
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 11px;
+}
+
+.bac-overlay-head div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bac-overlay-head span {
+  color: #111318;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.bac-overlay-head small {
+  color: rgba(31, 35, 40, 0.52);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bac-history-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: min(378px, calc(100vh - 180px));
+  overflow: auto;
+  padding: 10px;
+  scrollbar-width: thin;
+}
+
+.bac-history-item {
+  align-items: center;
+  background: rgba(246, 248, 250, 0.82);
+  border: 1px solid rgba(31, 35, 40, 0.07);
+  border-radius: 11px;
+  color: #1f2328;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 54px;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.bac-history-item:hover,
+.bac-history-item.active {
+  background: rgba(16, 163, 127, 0.1);
+  border-color: rgba(16, 163, 127, 0.24);
+}
+
+.bac-history-item span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.bac-history-item strong,
+.bac-history-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bac-history-item strong {
+  color: #111318;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.bac-history-item small {
+  color: rgba(31, 35, 40, 0.58);
+  font-size: 11px;
+}
+
+.bac-history-item em {
+  color: rgba(31, 35, 40, 0.46);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.bac-llm-pane {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  height: min(346px, calc(100vh - 190px));
+  min-height: 260px;
+}
+
+.bac-llm-list {
+  background: rgba(246, 248, 250, 0.76);
+  border-right: 1px solid rgba(31, 35, 40, 0.07);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.bac-llm-item {
+  align-items: flex-start;
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid rgba(31, 35, 40, 0.07);
+  border-radius: 10px;
+  color: rgba(31, 35, 40, 0.7);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  gap: 2px;
+  min-height: 40px;
+  padding: 8px;
+  text-align: left;
+}
+
+.bac-llm-item.create {
+  align-items: center;
+  flex-direction: row;
+  font-weight: 750;
+}
+
+.bac-llm-item.active,
+.bac-llm-item:hover {
+  background: rgba(16, 163, 127, 0.1);
+  border-color: rgba(16, 163, 127, 0.24);
+  color: #0c7d62;
+}
+
+.bac-llm-item span,
+.bac-llm-item small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bac-llm-item span {
+  font-weight: 740;
+}
+
+.bac-llm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.bac-llm-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bac-llm-form label span {
+  color: rgba(31, 35, 40, 0.56);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.bac-llm-form input {
+  background: rgba(246, 248, 250, 0.9);
+  border: 1px solid rgba(31, 35, 40, 0.1);
+  border-radius: 9px;
+  color: #1f2328;
+  font-size: 12px;
+  height: 34px;
+  outline: 0;
+  padding: 0 9px;
+}
+
+.bac-llm-form input:focus {
+  border-color: rgba(16, 163, 127, 0.38);
+  box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.1);
+}
+
+.bac-llm-status {
+  background: rgba(246, 248, 250, 0.78);
+  border: 1px solid rgba(31, 35, 40, 0.07);
+  border-radius: 9px;
+  color: rgba(31, 35, 40, 0.66);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 7px 8px;
+}
+
+.bac-llm-actions {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 2px;
+}
+
+.bac-llm-actions button {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  border-radius: 9px;
+  color: rgba(31, 35, 40, 0.72);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 720;
+  height: 32px;
+}
+
+.bac-llm-actions button:last-child {
+  background: #111318;
+  border-color: #111318;
+  color: #ffffff;
+}
+
+.bac-llm-actions button:hover {
+  border-color: rgba(16, 163, 127, 0.28);
+  color: #0c7d62;
+}
+
+.bac-llm-actions button:last-child:hover {
+  background: #0c7d62;
+  color: #ffffff;
+}
+
+.bac-llm-actions button:disabled {
+  color: rgba(31, 35, 40, 0.3);
+  cursor: not-allowed;
 }
 
 .bac-empty-mark {
@@ -541,7 +823,7 @@ textarea {
 }
 
 .bac-messages {
-  grid-row: 4;
+  grid-row: 2;
   min-height: 0;
   overflow: auto;
   padding: 8px 14px 14px;
@@ -842,7 +1124,7 @@ textarea {
 
 .bac-composer {
   border-top: 1px solid rgba(31, 35, 40, 0.07);
-  grid-row: 5;
+  grid-row: 3;
   padding: 9px 12px 12px;
 }
 

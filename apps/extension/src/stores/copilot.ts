@@ -9,6 +9,8 @@ import type {
   ConversationDetail,
   ConversationSummary,
   ContextScope,
+  LlmConfigTestResponse,
+  LlmRuntimeConfig,
   PageContext,
   SelectionReference,
   ToolCallPreview,
@@ -35,6 +37,17 @@ interface PendingToolConfirmation {
   summary: string;
 }
 
+export interface UserLlmModel extends LlmRuntimeConfig {
+  id: string;
+  displayName: string;
+  providerName: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface CopilotState {
   isOpen: boolean;
   isHydrated: boolean;
@@ -47,6 +60,10 @@ interface CopilotState {
   toolCopyStatus: 'idle' | 'copied' | 'failed';
   lastToolResult: BrowserActionResponse | null;
   pendingToolConfirmation: PendingToolConfirmation | null;
+  llmModels: UserLlmModel[];
+  selectedLlmModelId?: string;
+  isTestingLlmModel: boolean;
+  llmConfigStatus: string | null;
   isLoadingConversations: boolean;
   conversationError: string | null;
   conversations: ConversationSummary[];
@@ -73,6 +90,8 @@ type OpenAgentTabResponse =
 
 const debugLoggingKey = 'bac.debugLogging';
 const clientIdKey = 'bac.clientId';
+const llmModelsKey = 'bac.llmModels';
+const selectedLlmModelIdKey = 'bac.selectedLlmModelId';
 const maxPersistedMessages = 40;
 const maxPersistedContentLength = 20000;
 const maxPersistedContextTextLength = 12000;
@@ -179,6 +198,48 @@ async function getOrCreateClientId() {
   return nextClientId;
 }
 
+function sanitizeLlmModel(value: unknown): UserLlmModel | null {
+  const model = value as Partial<UserLlmModel> | undefined;
+  if (
+    typeof model?.id !== 'string' ||
+    typeof model.displayName !== 'string' ||
+    typeof model.providerName !== 'string' ||
+    typeof model.baseUrl !== 'string' ||
+    typeof model.apiKey !== 'string' ||
+    typeof model.model !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: model.id,
+    displayName: model.displayName,
+    providerName: model.providerName,
+    baseUrl: model.baseUrl,
+    apiKey: model.apiKey,
+    model: model.model,
+    createdAt: typeof model.createdAt === 'string' ? model.createdAt : new Date().toISOString(),
+    updatedAt: typeof model.updatedAt === 'string' ? model.updatedAt : new Date().toISOString()
+  };
+}
+
+function sanitizeLlmModels(value: unknown) {
+  return Array.isArray(value)
+    ? value.map(sanitizeLlmModel).filter((model): model is UserLlmModel => Boolean(model))
+    : [];
+}
+
+function toRuntimeLlmConfig(model?: UserLlmModel): LlmRuntimeConfig | undefined {
+  if (!model) return undefined;
+  return {
+    providerName: model.providerName,
+    displayName: model.displayName,
+    baseUrl: model.baseUrl,
+    apiKey: model.apiKey,
+    model: model.model
+  };
+}
+
 export const useCopilotStore = defineStore('copilot', {
   state: (): CopilotState => ({
     isOpen: false,
@@ -191,6 +252,10 @@ export const useCopilotStore = defineStore('copilot', {
     toolCopyStatus: 'idle',
     lastToolResult: null,
     pendingToolConfirmation: null,
+    llmModels: [],
+    selectedLlmModelId: undefined,
+    isTestingLlmModel: false,
+    llmConfigStatus: null,
     isLoadingConversations: false,
     conversationError: null,
     conversations: [],
@@ -207,9 +272,20 @@ export const useCopilotStore = defineStore('copilot', {
       if (this.isHydrated) return;
 
       try {
-        const stored = await browser.storage.local.get([debugLoggingKey, clientIdKey]);
+        const stored = await browser.storage.local.get([
+          debugLoggingKey,
+          clientIdKey,
+          llmModelsKey,
+          selectedLlmModelIdKey
+        ]);
         this.debugLogging = stored[debugLoggingKey] === true;
         this.clientId = await getOrCreateClientId();
+        this.llmModels = sanitizeLlmModels(stored[llmModelsKey]);
+        const selectedModelId = stored[selectedLlmModelIdKey];
+        this.selectedLlmModelId =
+          typeof selectedModelId === 'string' && this.llmModels.some((model) => model.id === selectedModelId)
+            ? selectedModelId
+            : this.llmModels[0]?.id;
 
         const tabState = await getTabConversationState();
         if (tabState.ok && tabState.state) {
@@ -242,6 +318,18 @@ export const useCopilotStore = defineStore('copilot', {
           this.clientId = typeof nextClientId === 'string' ? nextClientId : this.clientId;
         }
 
+        if (changes[llmModelsKey]) {
+          this.llmModels = sanitizeLlmModels(changes[llmModelsKey].newValue);
+          if (this.selectedLlmModelId && !this.llmModels.some((model) => model.id === this.selectedLlmModelId)) {
+            this.selectedLlmModelId = this.llmModels[0]?.id;
+          }
+        }
+
+        if (changes[selectedLlmModelIdKey]) {
+          const nextSelectedModelId = changes[selectedLlmModelIdKey].newValue;
+          this.selectedLlmModelId =
+            typeof nextSelectedModelId === 'string' ? nextSelectedModelId : this.selectedLlmModelId;
+        }
       });
     },
 
@@ -289,6 +377,99 @@ export const useCopilotStore = defineStore('copilot', {
 
     async toggleDebugLogging() {
       await this.setDebugLogging(!this.debugLogging);
+    },
+
+    getSelectedLlmModel() {
+      return this.llmModels.find((model) => model.id === this.selectedLlmModelId);
+    },
+
+    async selectLlmModel(modelId: string) {
+      if (!this.llmModels.some((model) => model.id === modelId)) return;
+      this.selectedLlmModelId = modelId;
+      this.llmConfigStatus = null;
+      await browser.storage.local.set({ [selectedLlmModelIdKey]: modelId });
+    },
+
+    clearLlmConfigStatus() {
+      this.llmConfigStatus = null;
+    },
+
+    async saveLlmModel(input: {
+      id?: string;
+      displayName: string;
+      providerName: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+    }) {
+      const now = new Date().toISOString();
+      const existing = input.id ? this.llmModels.find((model) => model.id === input.id) : undefined;
+      const nextModel: UserLlmModel = {
+        id: existing?.id || createId('llm'),
+        displayName: input.displayName.trim(),
+        providerName: input.providerName.trim(),
+        baseUrl: input.baseUrl.trim(),
+        apiKey: input.apiKey.trim(),
+        model: input.model.trim(),
+        createdAt: existing?.createdAt || now,
+        updatedAt: now
+      };
+
+      if (!nextModel.displayName || !nextModel.providerName || !nextModel.baseUrl || !nextModel.apiKey || !nextModel.model) {
+        this.llmConfigStatus = '请完整填写模型名称、厂商、URL、API Key 和模型。';
+        return null;
+      }
+
+      const nextModels = existing
+        ? this.llmModels.map((model) => (model.id === existing.id ? nextModel : model))
+        : [nextModel, ...this.llmModels];
+
+      this.llmModels = nextModels;
+      this.selectedLlmModelId = nextModel.id;
+      this.llmConfigStatus = '已保存并选中该模型。';
+      await browser.storage.local.set({
+        [llmModelsKey]: nextModels,
+        [selectedLlmModelIdKey]: nextModel.id
+      });
+      return nextModel;
+    },
+
+    async testLlmModel(input: {
+      displayName?: string;
+      providerName?: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+    }) {
+      if (!input.baseUrl.trim() || !input.apiKey.trim() || !input.model.trim()) {
+        const response = { ok: false, message: '请先填写 URL、API Key 和模型。' };
+        this.llmConfigStatus = response.message;
+        return response;
+      }
+
+      this.isTestingLlmModel = true;
+      this.llmConfigStatus = null;
+
+      try {
+        const response = await fetchJson<LlmConfigTestResponse>('/chat/test-model', {
+          method: 'POST',
+          body: JSON.stringify({
+            displayName: input.displayName,
+            providerName: input.providerName,
+            baseUrl: input.baseUrl.trim(),
+            apiKey: input.apiKey.trim(),
+            model: input.model.trim()
+          })
+        });
+        this.llmConfigStatus = response.message;
+        return response;
+      } catch {
+        const response = { ok: false, message: '连接测试失败，请检查模型配置。' };
+        this.llmConfigStatus = response.message;
+        return response;
+      } finally {
+        this.isTestingLlmModel = false;
+      }
     },
 
     async openConversationList() {
@@ -579,7 +760,8 @@ export const useCopilotStore = defineStore('copilot', {
         conversationId: this.conversationId,
         message: content,
         context,
-        scope: this.contextScope
+        scope: this.contextScope,
+        llmConfig: toRuntimeLlmConfig(this.getSelectedLlmModel())
       };
 
       debugLog(this.debugLogging, 'Sending chat message.', {
