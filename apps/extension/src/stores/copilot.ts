@@ -3,15 +3,21 @@ import { defineStore } from 'pinia';
 import type {
   BrowserActionName,
   BrowserActionResponse,
+  AgentWorkflowStep,
   ChatMessage,
   ChatStreamEvent,
   ChatStreamRequest,
   ConversationDetail,
   ConversationSummary,
   ContextScope,
+  LlmConfigTestResponse,
+  LlmRuntimeConfig,
   PageContext,
+  SavedLlmModelConfig,
   SelectionReference,
-  ToolCallPreview
+  SaveLlmModelConfigRequest,
+  ToolCallPreview,
+  ToolRiskLevel
 } from '@bac/shared';
 import { API_BASE_URL } from '../env';
 
@@ -24,7 +30,36 @@ interface PersistedConversation {
   conversationId?: string;
   contextScope: ContextScope;
   messages: ChatMessage[];
+  workflowSteps?: AgentWorkflowStep[];
   updatedAt: string;
+}
+
+interface LocalConversationRecord extends PersistedConversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  pageUrl?: string;
+  pageTitle?: string;
+}
+
+interface PendingToolConfirmation {
+  id?: string;
+  action: BrowserActionName;
+  input?: unknown;
+  risk: Exclude<ToolRiskLevel, 'low'>;
+  summary: string;
+  source?: 'manual' | 'agent';
+}
+
+interface AgentWorkflowRecord {
+  conversationId: string;
+  steps: AgentWorkflowStep[];
+  updatedAt: string;
+}
+
+export interface UserLlmModel extends SavedLlmModelConfig {
+  apiKey?: string;
+  source?: 'server' | 'local';
 }
 
 interface CopilotState {
@@ -36,11 +71,18 @@ interface CopilotState {
   isToolsOpen: boolean;
   isExecutingTool: boolean;
   toolError: string | null;
+  toolCopyStatus: 'idle' | 'copied' | 'failed';
   lastToolResult: BrowserActionResponse | null;
+  pendingToolConfirmation: PendingToolConfirmation | null;
+  llmModels: UserLlmModel[];
+  selectedLlmModelId?: string;
+  isTestingLlmModel: boolean;
+  llmConfigStatus: string | null;
   isLoadingConversations: boolean;
   conversationError: string | null;
   conversations: ConversationSummary[];
   messages: ChatMessage[];
+  workflowSteps: AgentWorkflowStep[];
   draft: string;
   selection: CapturedSelection | null;
   contextScope: ContextScope;
@@ -53,15 +95,31 @@ type ChatPortResponse =
   | { type: 'event'; event: ChatStreamEvent }
   | { type: 'error'; message: string };
 
+type ChatPortRequest =
+  | { type: 'start'; request: ChatStreamRequest }
+  | { type: 'cancel' }
+  | { type: 'confirm_tool'; toolCallId: string }
+  | { type: 'reject_tool'; toolCallId: string };
+
 type TabConversationResponse =
   | { ok: true; state?: PersistedConversation }
   | { ok: false; error?: string };
 
+type OpenAgentTabResponse =
+  | { ok: true; tabId?: number; inherited: boolean }
+  | { ok: false; error?: string };
+
 const debugLoggingKey = 'bac.debugLogging';
 const clientIdKey = 'bac.clientId';
+const llmModelsKey = 'bac.llmModels';
+const selectedLlmModelIdKey = 'bac.selectedLlmModelId';
+const localConversationHistoryKey = 'bac.localConversationHistory';
+const agentWorkflowsKey = 'bac.agentWorkflows';
 const maxPersistedMessages = 40;
 const maxPersistedContentLength = 20000;
 const maxPersistedContextTextLength = 12000;
+const maxLocalConversationHistory = 50;
+const maxAgentWorkflows = 50;
 let storageListenerInstalled = false;
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 let activePort: ReturnType<typeof browser.runtime.connect> | undefined;
@@ -101,7 +159,7 @@ function compactPageContext(context: PageContext): PageContext {
 }
 
 function stopActiveStream() {
-  activePort?.postMessage({ type: 'cancel' });
+  activePort?.postMessage({ type: 'cancel' } satisfies ChatPortRequest);
   activePort?.disconnect();
   activePort = undefined;
 }
@@ -146,6 +204,13 @@ async function setTabConversationState(payload: PersistedConversation) {
   }) as Promise<TabConversationResponse>;
 }
 
+async function requestOpenAgentTab(url: string) {
+  return browser.runtime.sendMessage({
+    type: 'open-agent-tab',
+    url
+  }) as Promise<OpenAgentTabResponse>;
+}
+
 async function getOrCreateClientId() {
   const stored = await browser.storage.local.get(clientIdKey);
   const existing = stored[clientIdKey];
@@ -158,6 +223,302 @@ async function getOrCreateClientId() {
   return nextClientId;
 }
 
+function sanitizeLlmModel(value: unknown): UserLlmModel | null {
+  const model = value as Partial<UserLlmModel> | undefined;
+  if (
+    typeof model?.id !== 'string' ||
+    typeof model.displayName !== 'string' ||
+    typeof model.providerName !== 'string' ||
+    typeof model.baseUrl !== 'string' ||
+    typeof model.model !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: model.id,
+    displayName: model.displayName,
+    providerName: model.providerName,
+    baseUrl: model.baseUrl,
+    apiKey: typeof model.apiKey === 'string' ? model.apiKey : undefined,
+    model: model.model,
+    hasApiKey: model.hasApiKey === true || typeof model.apiKey === 'string',
+    createdAt: typeof model.createdAt === 'string' ? model.createdAt : new Date().toISOString(),
+    updatedAt: typeof model.updatedAt === 'string' ? model.updatedAt : new Date().toISOString(),
+    source: model.source === 'local' ? 'local' : 'server'
+  };
+}
+
+function normalizeHistoryText(text?: string) {
+  return (text || '').replace(/\s+/g, ' ').trim();
+}
+
+function deriveLocalConversationTitle(messages: ChatMessage[]) {
+  const firstUserMessage = messages.find((message) => message.role === 'user' && message.content.trim());
+  const title = normalizeHistoryText(firstUserMessage?.content);
+  if (title) {
+    return title.length > 34 ? `${title.slice(0, 34)}...` : title;
+  }
+
+  const pageTitle = messages.find((message) => message.context?.title)?.context?.title;
+  return normalizeHistoryText(pageTitle) || '新对话';
+}
+
+function getLastVisibleMessage(messages: ChatMessage[]) {
+  return [...messages]
+    .reverse()
+    .find((message) => (message.role === 'user' || message.role === 'assistant') && message.content.trim());
+}
+
+function getLatestPageContext(messages: ChatMessage[]) {
+  return [...messages].reverse().find((message) => message.context)?.context;
+}
+
+function sanitizeLocalConversationRecord(value: unknown): LocalConversationRecord | null {
+  const record = value as Partial<LocalConversationRecord> | undefined;
+  if (
+    typeof record?.id !== 'string' ||
+    typeof record.title !== 'string' ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.updatedAt !== 'string' ||
+    !Array.isArray(record.messages)
+  ) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    conversationId: typeof record.conversationId === 'string' ? record.conversationId : record.id,
+    contextScope:
+      record.contextScope === 'selection' || record.contextScope === 'full-page'
+        ? record.contextScope
+        : 'visible-page',
+    messages: record.messages.filter((message): message is ChatMessage => {
+      const item = message as Partial<ChatMessage>;
+      return (
+        typeof item?.id === 'string' &&
+        typeof item.role === 'string' &&
+        typeof item.content === 'string' &&
+        typeof item.createdAt === 'string'
+      );
+    }),
+    workflowSteps: sanitizeWorkflowSteps(record.workflowSteps),
+    updatedAt: record.updatedAt,
+    createdAt: record.createdAt,
+    title: record.title,
+    pageUrl: typeof record.pageUrl === 'string' ? record.pageUrl : undefined,
+    pageTitle: typeof record.pageTitle === 'string' ? record.pageTitle : undefined
+  };
+}
+
+function sanitizeWorkflowStep(value: unknown): AgentWorkflowStep | null {
+  const step = value as Partial<AgentWorkflowStep> | undefined;
+  if (
+    typeof step?.id !== 'string' ||
+    typeof step.title !== 'string' ||
+    (step.status !== 'pending' && step.status !== 'running' && step.status !== 'success' && step.status !== 'error')
+  ) {
+    return null;
+  }
+
+  return {
+    id: step.id,
+    title: step.title,
+    status: step.status,
+    detail: typeof step.detail === 'string' ? step.detail : undefined
+  };
+}
+
+function sanitizeWorkflowSteps(value: unknown) {
+  return Array.isArray(value)
+    ? value.map(sanitizeWorkflowStep).filter((step): step is AgentWorkflowStep => Boolean(step))
+    : [];
+}
+
+function sanitizeAgentWorkflowRecord(value: unknown): AgentWorkflowRecord | null {
+  const record = value as Partial<AgentWorkflowRecord> | undefined;
+  if (typeof record?.conversationId !== 'string' || typeof record.updatedAt !== 'string') return null;
+  return {
+    conversationId: record.conversationId,
+    steps: sanitizeWorkflowSteps(record.steps),
+    updatedAt: record.updatedAt
+  };
+}
+
+function sanitizeAgentWorkflowRecords(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map(sanitizeAgentWorkflowRecord)
+        .filter((record): record is AgentWorkflowRecord => Boolean(record))
+    : [];
+}
+
+async function readAgentWorkflows() {
+  const stored = await browser.storage.local.get(agentWorkflowsKey);
+  return sanitizeAgentWorkflowRecords(stored[agentWorkflowsKey]);
+}
+
+async function writeAgentWorkflows(records: AgentWorkflowRecord[]) {
+  await browser.storage.local.set({
+    [agentWorkflowsKey]: records.slice(0, maxAgentWorkflows)
+  });
+}
+
+async function upsertAgentWorkflow(conversationId: string, steps: AgentWorkflowStep[]) {
+  if (!conversationId) return;
+  const workflows = await readAgentWorkflows();
+  const nextRecord: AgentWorkflowRecord = {
+    conversationId,
+    steps,
+    updatedAt: new Date().toISOString()
+  };
+  await writeAgentWorkflows([
+    nextRecord,
+    ...workflows.filter((record) => record.conversationId !== conversationId)
+  ]);
+}
+
+async function readAgentWorkflow(conversationId: string) {
+  return (await readAgentWorkflows()).find((record) => record.conversationId === conversationId)?.steps || [];
+}
+
+async function deleteAgentWorkflow(conversationId: string) {
+  const workflows = await readAgentWorkflows();
+  await writeAgentWorkflows(workflows.filter((record) => record.conversationId !== conversationId));
+}
+
+function sanitizeLocalConversationHistory(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map(sanitizeLocalConversationRecord)
+        .filter((record): record is LocalConversationRecord => Boolean(record))
+    : [];
+}
+
+async function readLocalConversationHistory() {
+  const stored = await browser.storage.local.get(localConversationHistoryKey);
+  return sanitizeLocalConversationHistory(stored[localConversationHistoryKey]);
+}
+
+async function writeLocalConversationHistory(records: LocalConversationRecord[]) {
+  await browser.storage.local.set({
+    [localConversationHistoryKey]: records.slice(0, maxLocalConversationHistory)
+  });
+}
+
+async function deleteLocalConversationHistory(conversationId: string) {
+  const history = await readLocalConversationHistory();
+  await writeLocalConversationHistory(
+    history.filter((record) => record.id !== conversationId && record.conversationId !== conversationId)
+  );
+}
+
+function localRecordToSummary(record: LocalConversationRecord): ConversationSummary {
+  const lastMessage = getLastVisibleMessage(record.messages);
+  return {
+    id: record.id,
+    title: record.title || deriveLocalConversationTitle(record.messages),
+    pageUrl: record.pageUrl,
+    pageTitle: record.pageTitle,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    messageCount: record.messages.length,
+    lastMessage: lastMessage
+      ? {
+          role: lastMessage.role,
+          content: lastMessage.content,
+          createdAt: lastMessage.createdAt
+        }
+      : undefined
+  };
+}
+
+function mergeConversationSummaries(
+  localSummaries: ConversationSummary[],
+  serverSummaries: ConversationSummary[]
+) {
+  const byId = new Map<string, ConversationSummary>();
+
+  for (const summary of serverSummaries) {
+    byId.set(summary.id, summary);
+  }
+
+  for (const summary of localSummaries) {
+    byId.set(summary.id, {
+      ...byId.get(summary.id),
+      ...summary
+    });
+  }
+
+  return [...byId.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
+
+async function upsertLocalConversationHistory(payload: PersistedConversation) {
+  if (!payload.conversationId || !payload.messages.some((message) => message.content.trim())) return;
+
+  const history = await readLocalConversationHistory();
+  const existing = history.find((record) => record.id === payload.conversationId);
+  const pageContext = getLatestPageContext(payload.messages);
+  const nextRecord: LocalConversationRecord = {
+    id: payload.conversationId,
+    conversationId: payload.conversationId,
+    contextScope: payload.contextScope,
+    messages: payload.messages,
+    workflowSteps: payload.workflowSteps,
+    updatedAt: payload.updatedAt,
+    createdAt: existing?.createdAt || payload.messages[0]?.createdAt || payload.updatedAt,
+    title: deriveLocalConversationTitle(payload.messages),
+    pageUrl: pageContext?.url || existing?.pageUrl,
+    pageTitle: pageContext?.title || existing?.pageTitle
+  };
+
+  await writeLocalConversationHistory([
+    nextRecord,
+    ...history.filter((record) => record.id !== payload.conversationId)
+  ]);
+}
+
+function sanitizeLlmModels(value: unknown) {
+  return Array.isArray(value)
+    ? value.map(sanitizeLlmModel).filter((model): model is UserLlmModel => Boolean(model))
+    : [];
+}
+
+function mergeLlmModels(localModels: UserLlmModel[], serverModels: SavedLlmModelConfig[]) {
+  const byId = new Map<string, UserLlmModel>();
+  for (const local of localModels) {
+    byId.set(local.id, local);
+  }
+  for (const server of serverModels) {
+    const existing = byId.get(server.id);
+    byId.set(server.id, {
+      ...server,
+      apiKey: existing?.apiKey,
+      source: 'server'
+    });
+  }
+  return [...byId.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
+
+function toRuntimeLlmConfig(model?: UserLlmModel): LlmRuntimeConfig | undefined {
+  if (!model?.apiKey) return undefined;
+  return {
+    providerName: model.providerName,
+    displayName: model.displayName,
+    baseUrl: model.baseUrl,
+    apiKey: model.apiKey,
+    model: model.model
+  };
+}
+
+function toSavedLlmModel(model: SavedLlmModelConfig, existing?: UserLlmModel, apiKey?: string): UserLlmModel {
+  return {
+    ...model,
+    apiKey: apiKey || existing?.apiKey,
+    source: model.persisted === false ? 'local' : 'server'
+  };
+}
+
 export const useCopilotStore = defineStore('copilot', {
   state: (): CopilotState => ({
     isOpen: false,
@@ -167,11 +528,18 @@ export const useCopilotStore = defineStore('copilot', {
     isToolsOpen: false,
     isExecutingTool: false,
     toolError: null,
+    toolCopyStatus: 'idle',
     lastToolResult: null,
+    pendingToolConfirmation: null,
+    llmModels: [],
+    selectedLlmModelId: undefined,
+    isTestingLlmModel: false,
+    llmConfigStatus: null,
     isLoadingConversations: false,
     conversationError: null,
     conversations: [],
     messages: [],
+    workflowSteps: [],
     draft: '',
     selection: null,
     contextScope: 'visible-page',
@@ -184,15 +552,31 @@ export const useCopilotStore = defineStore('copilot', {
       if (this.isHydrated) return;
 
       try {
-        const stored = await browser.storage.local.get([debugLoggingKey, clientIdKey]);
+        const stored = await browser.storage.local.get([
+          debugLoggingKey,
+          clientIdKey,
+          llmModelsKey,
+          selectedLlmModelIdKey
+        ]);
         this.debugLogging = stored[debugLoggingKey] === true;
         this.clientId = await getOrCreateClientId();
+        this.llmModels = sanitizeLlmModels(stored[llmModelsKey]);
+        const selectedModelId = stored[selectedLlmModelIdKey];
+        this.selectedLlmModelId =
+          typeof selectedModelId === 'string' && this.llmModels.some((model) => model.id === selectedModelId)
+            ? selectedModelId
+            : this.llmModels[0]?.id;
+        await this.loadLlmModels();
 
         const tabState = await getTabConversationState();
         if (tabState.ok && tabState.state) {
           this.conversationId = tabState.state.conversationId;
           this.messages = tabState.state.messages || [];
+          this.workflowSteps = tabState.state.workflowSteps || [];
           this.contextScope = tabState.state.contextScope || 'visible-page';
+          if (this.conversationId && this.workflowSteps.length === 0) {
+            this.workflowSteps = await readAgentWorkflow(this.conversationId);
+          }
         }
       } catch (error) {
         this.streamError = (error as Error).message || '恢复本地对话失败。';
@@ -219,6 +603,18 @@ export const useCopilotStore = defineStore('copilot', {
           this.clientId = typeof nextClientId === 'string' ? nextClientId : this.clientId;
         }
 
+        if (changes[llmModelsKey]) {
+          this.llmModels = sanitizeLlmModels(changes[llmModelsKey].newValue);
+          if (this.selectedLlmModelId && !this.llmModels.some((model) => model.id === this.selectedLlmModelId)) {
+            this.selectedLlmModelId = this.llmModels[0]?.id;
+          }
+        }
+
+        if (changes[selectedLlmModelIdKey]) {
+          const nextSelectedModelId = changes[selectedLlmModelIdKey].newValue;
+          this.selectedLlmModelId =
+            typeof nextSelectedModelId === 'string' ? nextSelectedModelId : this.selectedLlmModelId;
+        }
       });
     },
 
@@ -237,6 +633,7 @@ export const useCopilotStore = defineStore('copilot', {
         conversationId: this.conversationId,
         contextScope: this.contextScope,
         messages: compactMessages(this.messages),
+        workflowSteps: this.workflowSteps,
         updatedAt: new Date().toISOString()
       };
 
@@ -247,6 +644,17 @@ export const useCopilotStore = defineStore('copilot', {
         }
       } catch (error) {
         this.streamError = (error as Error).message || '保存本地对话失败。';
+      }
+
+      try {
+        await upsertLocalConversationHistory(payload);
+        if (payload.conversationId && payload.workflowSteps?.length) {
+          await upsertAgentWorkflow(payload.conversationId, payload.workflowSteps);
+        }
+      } catch (error) {
+        debugLog(this.debugLogging, 'Persisting local conversation history failed.', {
+          message: error instanceof Error ? error.message : String(error)
+        });
       }
     },
 
@@ -266,6 +674,209 @@ export const useCopilotStore = defineStore('copilot', {
 
     async toggleDebugLogging() {
       await this.setDebugLogging(!this.debugLogging);
+    },
+
+    getSelectedLlmModel() {
+      return this.llmModels.find((model) => model.id === this.selectedLlmModelId);
+    },
+
+    async selectLlmModel(modelId: string) {
+      if (!this.llmModels.some((model) => model.id === modelId)) return;
+      this.selectedLlmModelId = modelId;
+      this.llmConfigStatus = null;
+      await browser.storage.local.set({ [selectedLlmModelIdKey]: modelId });
+    },
+
+    clearLlmConfigStatus() {
+      this.llmConfigStatus = null;
+    },
+
+    async persistLlmModels() {
+      await browser.storage.local.set({
+        [llmModelsKey]: this.llmModels,
+        [selectedLlmModelIdKey]: this.selectedLlmModelId
+      });
+    },
+
+    async loadLlmModels() {
+      if (!this.clientId) return;
+
+      const localModels = [...this.llmModels];
+      try {
+        const serverModels = await fetchJson<SavedLlmModelConfig[]>(
+          `/llm-models?clientId=${encodeURIComponent(this.clientId)}`
+        );
+        this.llmModels = mergeLlmModels(localModels, serverModels);
+        if (this.selectedLlmModelId && !this.llmModels.some((model) => model.id === this.selectedLlmModelId)) {
+          this.selectedLlmModelId = this.llmModels[0]?.id;
+        } else if (!this.selectedLlmModelId) {
+          this.selectedLlmModelId = this.llmModels[0]?.id;
+        }
+        await this.persistLlmModels();
+      } catch (error) {
+        debugLog(this.debugLogging, 'Loading server LLM models failed; using local cache.', {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    },
+
+    async saveLlmModel(input: {
+      id?: string;
+      displayName: string;
+      providerName: string;
+      baseUrl: string;
+      apiKey?: string;
+      model: string;
+    }) {
+      const now = new Date().toISOString();
+      const existing = input.id ? this.llmModels.find((model) => model.id === input.id) : undefined;
+      const nextModel: UserLlmModel = {
+        id: existing?.id || createId('llm'),
+        displayName: input.displayName.trim(),
+        providerName: input.providerName.trim(),
+        baseUrl: input.baseUrl.trim(),
+        apiKey: input.apiKey?.trim() || existing?.apiKey,
+        model: input.model.trim(),
+        hasApiKey: Boolean(input.apiKey?.trim() || existing?.apiKey),
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+        source: existing?.source || 'local'
+      };
+
+      if (!nextModel.displayName || !nextModel.providerName || !nextModel.baseUrl || !nextModel.model) {
+        this.llmConfigStatus = '请完整填写模型名称、厂商、URL 和模型。';
+        return null;
+      }
+      if (!nextModel.hasApiKey) {
+        this.llmConfigStatus = '请填写 API Key。';
+        return null;
+      }
+
+      let savedModel = nextModel;
+      try {
+        const body: SaveLlmModelConfigRequest = {
+          clientId: this.clientId,
+          displayName: nextModel.displayName,
+          providerName: nextModel.providerName,
+          baseUrl: nextModel.baseUrl,
+          apiKey: input.apiKey?.trim() || undefined,
+          model: nextModel.model
+        };
+        const serverModel = await fetchJson<SavedLlmModelConfig>(
+          existing?.source === 'server'
+            ? `/llm-models/${encodeURIComponent(existing.id)}`
+            : '/llm-models',
+          {
+            method: existing?.source === 'server' ? 'PATCH' : 'POST',
+            body: JSON.stringify(body)
+          }
+        );
+        savedModel = toSavedLlmModel(serverModel, existing, input.apiKey?.trim());
+      } catch (error) {
+        debugLog(this.debugLogging, 'Saving server LLM model failed; using local fallback.', {
+          message: error instanceof Error ? error.message : String(error)
+        });
+        savedModel = {
+          ...nextModel,
+          source: 'local'
+        };
+      }
+
+      const nextModels = existing
+        ? this.llmModels.map((model) => (model.id === existing.id ? savedModel : model))
+        : [savedModel, ...this.llmModels];
+
+      this.llmModels = nextModels;
+      this.selectedLlmModelId = savedModel.id;
+      this.llmConfigStatus = savedModel.source === 'server' ? '已保存到数据库并选中该模型。' : '数据库暂不可用，已临时保存在本机。';
+      await this.persistLlmModels();
+      return savedModel;
+    },
+
+    async testLlmModel(input: {
+      id?: string;
+      displayName?: string;
+      providerName?: string;
+      baseUrl: string;
+      apiKey?: string;
+      model: string;
+    }) {
+      if (input.id && !input.apiKey?.trim()) {
+        this.isTestingLlmModel = true;
+        this.llmConfigStatus = null;
+        try {
+          const response = await fetchJson<LlmConfigTestResponse>(
+            `/llm-models/${encodeURIComponent(input.id)}/test?clientId=${encodeURIComponent(this.clientId || '')}`,
+            { method: 'POST' }
+          );
+          this.llmConfigStatus = response.message;
+          return response;
+        } catch {
+          const response = { ok: false, message: '连接测试失败，请检查模型配置。' };
+          this.llmConfigStatus = response.message;
+          return response;
+        } finally {
+          this.isTestingLlmModel = false;
+        }
+      }
+
+      if (!input.baseUrl.trim() || !input.apiKey?.trim() || !input.model.trim()) {
+        const response = { ok: false, message: '请先填写 URL、API Key 和模型。' };
+        this.llmConfigStatus = response.message;
+        return response;
+      }
+
+      this.isTestingLlmModel = true;
+      this.llmConfigStatus = null;
+
+      try {
+        const response = await fetchJson<LlmConfigTestResponse>('/llm-models/test', {
+          method: 'POST',
+          body: JSON.stringify({
+            displayName: input.displayName,
+            providerName: input.providerName,
+            baseUrl: input.baseUrl.trim(),
+            apiKey: input.apiKey.trim(),
+            model: input.model.trim()
+          })
+        });
+        this.llmConfigStatus = response.message;
+        return response;
+      } catch {
+        const response = { ok: false, message: '连接测试失败，请检查模型配置。' };
+        this.llmConfigStatus = response.message;
+        return response;
+      } finally {
+        this.isTestingLlmModel = false;
+      }
+    },
+
+    async deleteLlmModel(modelId: string) {
+      const existing = this.llmModels.find((model) => model.id === modelId);
+      if (!existing) return;
+
+      this.llmModels = this.llmModels.filter((model) => model.id !== modelId);
+      if (this.selectedLlmModelId === modelId) {
+        this.selectedLlmModelId = this.llmModels[0]?.id;
+      }
+      await this.persistLlmModels();
+
+      if (existing.source === 'server') {
+        try {
+          await fetchJson(
+            `/llm-models/${encodeURIComponent(modelId)}?clientId=${encodeURIComponent(this.clientId || '')}`,
+            { method: 'DELETE' }
+          );
+          this.llmConfigStatus = '已删除模型配置。';
+        } catch (error) {
+          debugLog(this.debugLogging, 'Deleting server LLM model failed; local list already updated.', {
+            message: error instanceof Error ? error.message : String(error)
+          });
+          this.llmConfigStatus = '本地已删除，数据库同步失败。';
+        }
+      } else {
+        this.llmConfigStatus = '已删除本地模型配置。';
+      }
     },
 
     async openConversationList() {
@@ -290,14 +901,48 @@ export const useCopilotStore = defineStore('copilot', {
       this.isToolsOpen = !this.isToolsOpen;
     },
 
-    async executeBrowserAction(action: BrowserActionName, input?: unknown) {
+    async executeBrowserAction(
+      action: BrowserActionName,
+      input?: unknown,
+      options?: {
+        risk?: ToolRiskLevel;
+        summary?: string;
+        confirmed?: boolean;
+      }
+    ) {
+      const risk = options?.risk || 'low';
+
+      if (risk !== 'low' && !options?.confirmed) {
+        this.pendingToolConfirmation = {
+          action,
+          input,
+          risk,
+          summary: options?.summary || action,
+          source: 'manual'
+        };
+        this.toolError = null;
+        return {
+          ok: false,
+          action,
+          error: '此浏览器动作需要确认后才能执行。'
+        } satisfies BrowserActionResponse;
+      }
+
       this.isExecutingTool = true;
       this.toolError = null;
+      this.toolCopyStatus = 'idle';
+      this.pendingToolConfirmation = null;
 
       try {
         const response = (await browser.runtime.sendMessage({
           type: 'execute-browser-action',
-          request: { action, input }
+          request: {
+            action,
+            input,
+            risk,
+            summary: options?.summary,
+            confirmed: options?.confirmed
+          }
         })) as BrowserActionResponse;
 
         this.lastToolResult = response;
@@ -315,6 +960,86 @@ export const useCopilotStore = defineStore('copilot', {
       }
     },
 
+    async confirmPendingToolAction() {
+      const pending = this.pendingToolConfirmation;
+      if (!pending) return;
+
+      if (pending.source === 'agent' && pending.id) {
+        activePort?.postMessage({
+          type: 'confirm_tool',
+          toolCallId: pending.id
+        } satisfies ChatPortRequest);
+        this.pendingToolConfirmation = null;
+        this.upsertWorkflowStep({
+          id: `tool:${pending.id}`,
+          title: pending.summary,
+          status: 'running',
+          detail: '已确认，正在执行'
+        });
+        return;
+      }
+
+      await this.executeBrowserAction(pending.action, pending.input, {
+        risk: pending.risk,
+        summary: pending.summary,
+        confirmed: true
+      });
+    },
+
+    rejectPendingToolAction() {
+      const pending = this.pendingToolConfirmation;
+      if (pending?.source === 'agent' && pending.id) {
+        activePort?.postMessage({
+          type: 'reject_tool',
+          toolCallId: pending.id
+        } satisfies ChatPortRequest);
+        this.upsertWorkflowStep({
+          id: `tool:${pending.id}`,
+          title: pending.summary,
+          status: 'cancelled',
+          detail: '已取消'
+        });
+      }
+      this.pendingToolConfirmation = null;
+      this.toolError = null;
+    },
+
+    async openAgentTab(url: string) {
+      try {
+        const response = await requestOpenAgentTab(url);
+        if (!response.ok) {
+          throw new Error(response.error || 'Agent 新标签页创建失败。');
+        }
+        return response;
+      } catch (error) {
+        this.toolError = error instanceof Error ? error.message : 'Agent 新标签页创建失败。';
+        return {
+          ok: false,
+          error: this.toolError
+        } satisfies OpenAgentTabResponse;
+      }
+    },
+
+    async copyLastToolResult() {
+      if (!this.lastToolResult) return;
+
+      const content = this.lastToolResult.ok
+        ? JSON.stringify(this.lastToolResult.output, null, 2)
+        : this.lastToolResult.error;
+
+      try {
+        await navigator.clipboard.writeText(content);
+        this.toolCopyStatus = 'copied';
+        window.setTimeout(() => {
+          if (this.toolCopyStatus === 'copied') {
+            this.toolCopyStatus = 'idle';
+          }
+        }, 1600);
+      } catch {
+        this.toolCopyStatus = 'failed';
+      }
+    },
+
     async loadConversations() {
       await this.hydrate();
       if (!this.clientId || this.isLoadingConversations) return;
@@ -323,11 +1048,21 @@ export const useCopilotStore = defineStore('copilot', {
       this.conversationError = null;
 
       try {
-        this.conversations = await fetchJson<ConversationSummary[]>(
-          `/conversations?clientId=${encodeURIComponent(this.clientId)}`
-        );
-      } catch (error) {
-        this.conversationError = getApiErrorMessage(error);
+        const localSummaries = (await readLocalConversationHistory()).map(localRecordToSummary);
+        this.conversations = localSummaries;
+
+        try {
+          const serverSummaries = await fetchJson<ConversationSummary[]>(
+            `/conversations?clientId=${encodeURIComponent(this.clientId)}`
+          );
+          this.conversations = mergeConversationSummaries(localSummaries, serverSummaries);
+        } catch (error) {
+          debugLog(this.debugLogging, 'Loading server conversation history failed; using local history.', {
+            message: error instanceof Error ? error.message : String(error)
+          });
+        }
+      } catch {
+        this.conversationError = '历史记录暂时不可用，请稍后重试。';
       } finally {
         this.isLoadingConversations = false;
       }
@@ -340,6 +1075,22 @@ export const useCopilotStore = defineStore('copilot', {
       this.conversationError = null;
 
       try {
+        const localConversation = (await readLocalConversationHistory()).find(
+          (record) => record.id === conversationId || record.conversationId === conversationId
+        );
+
+        if (localConversation) {
+          this.conversationId = localConversation.conversationId || localConversation.id;
+          this.messages = localConversation.messages;
+          this.workflowSteps = localConversation.workflowSteps || (await readAgentWorkflow(this.conversationId));
+          this.contextScope = localConversation.contextScope;
+          this.draft = '';
+          this.streamError = null;
+          await this.persistConversation();
+          this.closeConversationList();
+          return;
+        }
+
         const conversation = await fetchJson<ConversationDetail>(
           `/conversations/${encodeURIComponent(conversationId)}?clientId=${encodeURIComponent(
             this.clientId
@@ -347,6 +1098,7 @@ export const useCopilotStore = defineStore('copilot', {
         );
         this.conversationId = conversation.id;
         this.messages = conversation.messages;
+        this.workflowSteps = await readAgentWorkflow(conversation.id);
         this.draft = '';
         this.streamError = null;
         await this.persistConversation();
@@ -377,11 +1129,19 @@ export const useCopilotStore = defineStore('copilot', {
       this.conversationError = null;
 
       try {
-        await fetchJson(`/conversations/${encodeURIComponent(conversationId)}`, {
-          method: 'DELETE'
-        });
+        await deleteLocalConversationHistory(conversationId);
+        await deleteAgentWorkflow(conversationId);
         if (this.conversationId === conversationId) {
           await this.startNewConversation();
+        }
+        try {
+          await fetchJson(`/conversations/${encodeURIComponent(conversationId)}`, {
+            method: 'DELETE'
+          });
+        } catch (error) {
+          debugLog(this.debugLogging, 'Deleting server conversation failed; local history already updated.', {
+            message: error instanceof Error ? error.message : String(error)
+          });
         }
         await this.loadConversations();
       } catch (error) {
@@ -397,6 +1157,7 @@ export const useCopilotStore = defineStore('copilot', {
 
       this.conversationId = undefined;
       this.messages = [];
+      this.workflowSteps = [];
       this.draft = '';
       this.streamError = null;
       this.selection = null;
@@ -414,6 +1175,7 @@ export const useCopilotStore = defineStore('copilot', {
       }
 
       this.messages = [];
+      this.workflowSteps = [];
       this.draft = '';
       this.streamError = null;
       await this.persistConversation();
@@ -432,6 +1194,74 @@ export const useCopilotStore = defineStore('copilot', {
 
     setContextScope(scope: ContextScope) {
       this.contextScope = scope;
+      this.persistConversationSoon();
+    },
+
+    setWorkflowSteps(steps: AgentWorkflowStep[]) {
+      this.workflowSteps = steps;
+      this.persistConversationSoon();
+    },
+
+    upsertWorkflowStep(step: AgentWorkflowStep) {
+      const index = this.workflowSteps.findIndex((item) => item.id === step.id);
+      if (index >= 0) {
+        this.workflowSteps[index] = {
+          ...this.workflowSteps[index],
+          ...step
+        };
+      } else {
+        this.workflowSteps.push(step);
+      }
+      this.persistConversationSoon();
+    },
+
+    startMessageWorkflow(content: string) {
+      const title = content.length > 26 ? `${content.slice(0, 26)}...` : content;
+      this.setWorkflowSteps([
+        {
+          id: 'understand',
+          title: '理解任务',
+          status: 'running',
+          detail: title
+        },
+        {
+          id: 'browser-tools',
+          title: '执行页面工具',
+          status: 'pending'
+        },
+        {
+          id: 'final-answer',
+          title: '整理结果',
+          status: 'pending'
+        }
+      ]);
+    },
+
+    markWorkflowFinal(status: AgentWorkflowStep['status'], detail?: string) {
+      if (!this.workflowSteps.some((step) => step.id.startsWith('tool:'))) return;
+      const hasToolStep = this.workflowSteps.some((step) => step.id.startsWith('tool:'));
+      const hasCancelledTool = this.workflowSteps.some(
+        (step) => step.id.startsWith('tool:') && step.status === 'cancelled'
+      );
+      this.workflowSteps = this.workflowSteps
+        .map((step) => {
+          if (step.id === 'understand') {
+            return { ...step, status: step.status === 'error' ? step.status : 'success' };
+          }
+          if (step.id === 'browser-tools') {
+            return {
+              ...step,
+              status: hasCancelledTool ? 'cancelled' : hasToolStep ? 'success' : 'success',
+              detail: hasCancelledTool ? '部分动作已取消' : hasToolStep ? step.detail : '无需调用页面工具'
+            };
+          }
+          if (step.id === 'final-answer') {
+            return { ...step, status, detail };
+          }
+          return step.status === 'running' || step.status === 'waiting'
+            ? { ...step, status: hasCancelledTool ? 'cancelled' : 'success' }
+            : step;
+        });
       this.persistConversationSoon();
     },
 
@@ -457,18 +1287,13 @@ export const useCopilotStore = defineStore('copilot', {
         context,
         contextScope: this.contextScope
       };
-      const assistantMessage: ChatMessage = {
-        id: createId('assistant'),
-        role: 'assistant',
-        content: '',
-        createdAt: new Date().toISOString()
-      };
 
       if (appendUserMessage) {
         this.messages.push(userMessage);
       }
-      this.messages.push(assistantMessage);
-      const assistantIndex = this.messages.length - 1;
+      this.workflowSteps = [];
+      let assistantIndex = -1;
+      let assistantMessageId = createId('assistant');
       this.isStreaming = true;
       this.persistConversationSoon();
 
@@ -477,7 +1302,15 @@ export const useCopilotStore = defineStore('copilot', {
         conversationId: this.conversationId,
         message: content,
         context,
-        scope: this.contextScope
+        scope: this.contextScope,
+        llmModelConfigId:
+          this.getSelectedLlmModel()?.source === 'server'
+            ? this.getSelectedLlmModel()?.id
+            : undefined,
+        llmConfig:
+          this.getSelectedLlmModel()?.source === 'server'
+            ? undefined
+            : toRuntimeLlmConfig(this.getSelectedLlmModel())
       };
 
       debugLog(this.debugLogging, 'Sending chat message.', {
@@ -490,19 +1323,50 @@ export const useCopilotStore = defineStore('copilot', {
         selectedTextLength: context.selection?.text.length ?? 0
       });
 
+      const ensureAssistantMessage = () => {
+        if (assistantIndex >= 0 && this.messages[assistantIndex]) {
+          return assistantIndex;
+        }
+
+        const assistantMessage: ChatMessage = {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          createdAt: new Date().toISOString()
+        };
+        this.messages.push(assistantMessage);
+        assistantIndex = this.messages.length - 1;
+        return assistantIndex;
+      };
+
       const appendAssistantContent = (contentDelta: string) => {
-        const current = this.messages[assistantIndex];
+        const nextAssistantIndex = ensureAssistantMessage();
+        const current = this.messages[nextAssistantIndex];
         if (!current) return;
 
-        this.messages[assistantIndex] = {
+        this.messages[nextAssistantIndex] = {
           ...current,
           content: `${current.content}${contentDelta}`
         };
         this.persistConversationSoon();
       };
 
-      const updateAssistantToolCall = (toolCall: ToolCallPreview) => {
+      const updateAssistantId = (messageId: string) => {
+        assistantMessageId = messageId;
+        if (assistantIndex < 0) return;
         const current = this.messages[assistantIndex];
+        if (!current) return;
+
+        this.messages[assistantIndex] = {
+          ...current,
+          id: messageId
+        };
+        this.persistConversationSoon();
+      };
+
+      const updateAssistantToolCall = (toolCall: ToolCallPreview) => {
+        const nextAssistantIndex = ensureAssistantMessage();
+        const current = this.messages[nextAssistantIndex];
         if (!current) return;
 
         const key = toolCall.id || `${toolCall.toolName}:${toolCall.summary}`;
@@ -520,13 +1384,67 @@ export const useCopilotStore = defineStore('copilot', {
           nextToolCalls.push(toolCall);
         }
 
-        this.messages[assistantIndex] = {
+        this.messages[nextAssistantIndex] = {
           ...current,
           toolCalls: nextToolCalls
         };
+        const stepId = `tool:${key}`;
+        if (!this.workflowSteps.some((step) => step.id.startsWith('tool:'))) {
+          this.startMessageWorkflow(content);
+        }
+        this.upsertWorkflowStep({
+          id: 'understand',
+          title: '理解任务',
+          status: 'success'
+        });
+        const stepStatus =
+          toolCall.status === 'cancelled'
+            ? 'cancelled'
+            : toolCall.status === 'waiting'
+              ? 'waiting'
+              : toolCall.status === 'error'
+                ? 'error'
+                : toolCall.status === 'success'
+                  ? 'success'
+                  : 'running';
+        this.upsertWorkflowStep({
+          id: 'browser-tools',
+          title: '执行页面工具',
+          status: stepStatus === 'cancelled' ? 'cancelled' : stepStatus === 'waiting' ? 'waiting' : stepStatus
+        });
+        this.upsertWorkflowStep({
+          id: stepId,
+          title: toolCall.summary || String(toolCall.toolName),
+          status: stepStatus,
+          detail:
+            toolCall.error ||
+            ((toolCall.output as { detail?: string } | undefined)?.detail) ||
+            (stepStatus === 'waiting'
+              ? '等待确认'
+              : stepStatus === 'cancelled'
+                ? '已取消'
+                : undefined)
+        });
         this.persistConversationSoon();
       };
 
+      const handleToolConfirmation = (toolCall: ToolCallPreview) => {
+        const action = toolCall.toolName as BrowserActionName;
+        this.pendingToolConfirmation = {
+          id: toolCall.id,
+          action,
+          input: toolCall.input,
+          risk: toolCall.risk === 'low' ? 'medium' : toolCall.risk,
+          summary: toolCall.summary || String(toolCall.toolName),
+          source: 'agent'
+        };
+        updateAssistantToolCall({
+          ...toolCall,
+          status: 'waiting'
+        });
+      };
+
+      let assistantContentStarted = false;
       const handleEvent = (event: ChatStreamEvent) => {
         debugLog(this.debugLogging, 'Received stream event.', {
           type: event.type,
@@ -535,23 +1453,36 @@ export const useCopilotStore = defineStore('copilot', {
 
         if (event.type === 'meta') {
           this.conversationId = event.conversationId;
-          const current = this.messages[assistantIndex];
-          if (current) {
-            this.messages[assistantIndex] = {
-              ...current,
-              id: event.messageId
-            };
-          }
-          this.persistConversationSoon();
+          updateAssistantId(event.messageId);
         }
         if (event.type === 'delta') {
+          if (!assistantContentStarted && this.workflowSteps.some((step) => step.id.startsWith('tool:'))) {
+            assistantContentStarted = true;
+            this.upsertWorkflowStep({
+              id: 'understand',
+              title: '理解任务',
+              status: 'success'
+            });
+            this.upsertWorkflowStep({
+              id: 'final-answer',
+              title: '整理结果',
+              status: 'running'
+            });
+          }
           appendAssistantContent(event.content);
         }
         if (event.type === 'tool_call') {
           updateAssistantToolCall(event.toolCall);
         }
+        if (event.type === 'tool_confirmation') {
+          handleToolConfirmation(event.toolCall);
+        }
         if (event.type === 'error') {
           this.streamError = event.message;
+          this.markWorkflowFinal('error', event.message);
+        }
+        if (event.type === 'done') {
+          this.markWorkflowFinal(this.streamError ? 'error' : 'success', this.streamError || undefined);
         }
       };
 
@@ -572,9 +1503,6 @@ export const useCopilotStore = defineStore('copilot', {
             const message = rawMessage as ChatPortResponse;
             if (message.type === 'error') {
               this.streamError = message.message;
-              if (!this.messages[assistantIndex]?.content) {
-                appendAssistantContent(message.message);
-              }
               debugLog(this.debugLogging, 'Received stream port error.', {
                 message: message.message
               });
@@ -589,8 +1517,9 @@ export const useCopilotStore = defineStore('copilot', {
           });
 
           activePort.onDisconnect.addListener(() => {
-            if (this.isStreaming && !this.messages[assistantIndex]?.content) {
-              appendAssistantContent('流式连接已中断，请稍后重试。');
+            const current = assistantIndex >= 0 ? this.messages[assistantIndex] : undefined;
+            if (this.isStreaming && !current?.content && !current?.toolCalls?.length) {
+              this.streamError = '流式连接已中断，请稍后重试。';
             }
             debugLog(this.debugLogging, 'Chat stream port disconnected.');
             settle();
@@ -602,10 +1531,15 @@ export const useCopilotStore = defineStore('copilot', {
         const message =
           (error as Error).message || '请求失败，请确认本地 API 已启动。';
         this.streamError = message;
-        if (!this.messages[assistantIndex].content) {
-          appendAssistantContent(message);
-        }
+        this.markWorkflowFinal('error', message);
       } finally {
+        const current = assistantIndex >= 0 ? this.messages[assistantIndex] : undefined;
+        if (current && !current.content) {
+          this.messages.splice(assistantIndex, 1);
+        }
+        if (!this.streamError) {
+          this.markWorkflowFinal('success');
+        }
         this.isStreaming = false;
         activePort = undefined;
         await this.persistConversation();
@@ -613,6 +1547,27 @@ export const useCopilotStore = defineStore('copilot', {
           await this.loadConversations();
         }
       }
+    },
+
+    async resendUserMessage(messageId: string, content: string, context: PageContext) {
+      const nextContent = content.trim();
+      if (!nextContent || this.isStreaming) return;
+
+      const userIndex = this.messages.findIndex((message) => message.id === messageId && message.role === 'user');
+      if (userIndex < 0) return;
+
+      this.streamError = null;
+      this.draft = '';
+      this.messages[userIndex] = {
+        ...this.messages[userIndex],
+        content: nextContent,
+        context,
+        contextScope: this.contextScope,
+        createdAt: new Date().toISOString()
+      };
+      this.messages.splice(userIndex + 1);
+      await this.persistConversation();
+      await this.sendMessageContent(nextContent, context, false);
     },
 
     async retryAssistantMessage(messageId: string, context: PageContext) {
@@ -690,6 +1645,14 @@ export const useCopilotStore = defineStore('copilot', {
     cancelStream() {
       stopActiveStream();
       this.isStreaming = false;
+      this.pendingToolConfirmation = null;
+      if (this.workflowSteps.some((step) => step.id.startsWith('tool:'))) {
+        this.workflowSteps = this.workflowSteps.map((step) =>
+          step.status === 'running' || step.status === 'waiting'
+            ? { ...step, status: 'cancelled', detail: step.detail || '已停止' }
+            : step
+        );
+      }
       void this.persistConversation();
     },
 

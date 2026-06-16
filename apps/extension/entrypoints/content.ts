@@ -14,8 +14,12 @@ export default defineContentScript({
 
     const host = document.createElement('div');
     host.id = 'browser-agent-copilot-root';
-    host.style.position = 'relative';
+    host.style.height = '0';
+    host.style.inset = '0 auto auto 0';
+    host.style.pointerEvents = 'none';
+    host.style.position = 'fixed';
     host.style.zIndex = '2147483647';
+    host.style.width = '0';
 
     const shadow = host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');

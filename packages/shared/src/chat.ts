@@ -36,6 +36,52 @@ export interface ChatStreamRequest {
   context: PageContext;
   scope: ContextScope;
   toolResults?: AgentToolResult[];
+  llmConfig?: LlmRuntimeConfig;
+  llmModelConfigId?: string;
+}
+
+export interface LlmRuntimeConfig {
+  providerName?: string;
+  displayName?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+}
+
+export type LlmConfigTestRequest = LlmRuntimeConfig;
+
+export interface LlmConfigTestResponse {
+  ok: boolean;
+  message: string;
+}
+
+export interface SavedLlmModelConfig {
+  id: string;
+  clientId?: string;
+  displayName: string;
+  providerName: string;
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+  persisted?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveLlmModelConfigRequest {
+  clientId?: string;
+  displayName: string;
+  providerName: string;
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+}
+
+export interface AgentWorkflowStep {
+  id: string;
+  title: string;
+  status: 'pending' | 'running' | 'waiting' | 'success' | 'error' | 'cancelled';
+  detail?: string;
 }
 
 export interface AgentToolCall {
@@ -53,6 +99,15 @@ export interface AgentToolResult {
 }
 
 export interface ChatPlanResponse {
+  toolCalls: AgentToolCall[];
+}
+
+export interface ChatReplanRequest extends ChatStreamRequest {
+  iteration: number;
+}
+
+export interface ChatReplanResponse {
+  rationale?: string;
   toolCalls: AgentToolCall[];
 }
 
@@ -79,6 +134,7 @@ export type ChatStreamEvent =
   | { type: 'meta'; conversationId: string; messageId: string }
   | { type: 'delta'; content: string }
   | { type: 'tool_call'; toolCall: ToolCallPreview }
+  | { type: 'tool_confirmation'; toolCall: ToolCallPreview }
   | { type: 'done' }
   | { type: 'error'; message: string };
 
@@ -87,7 +143,7 @@ export interface ToolCallPreview {
   toolName: BrowserActionName | string;
   summary: string;
   risk: ToolRiskLevel;
-  status?: 'planned' | 'running' | 'success' | 'error';
+  status?: 'planned' | 'running' | 'waiting' | 'success' | 'error' | 'cancelled';
   input?: unknown;
   output?: unknown;
   error?: string;
