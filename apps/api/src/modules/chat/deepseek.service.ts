@@ -11,6 +11,9 @@ interface DeepseekStreamChoice {
     content?: string;
     reasoning_content?: string;
   };
+  message?: {
+    content?: string;
+  };
   finish_reason?: string | null;
 }
 
@@ -131,6 +134,40 @@ export class DeepseekService {
     while (pending.length) {
       yield pending.shift() as string;
     }
+  }
+
+  async completeChat(input: DeepseekChatInput & { maxTokens?: number }) {
+    const config = this.resolveConfig(input.llmConfig);
+    if (!config.apiKey) {
+      throw new Error('当前模型缺少 API Key，请先完成模型配置。');
+    }
+
+    const response = await fetch(this.createChatUrl(config.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: input.messages,
+        temperature: input.temperature ?? 0.1,
+        max_tokens: input.maxTokens ?? 600,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(parseDeepseekError(response.status, body));
+    }
+
+    const payload = (await response.json().catch(() => undefined)) as DeepseekStreamChunk | undefined;
+    if (payload?.error) {
+      throw new Error('模型响应暂时不可用，请稍后重试。');
+    }
+
+    return payload?.choices?.[0]?.message?.content?.trim() || '';
   }
 
   async testConfig(config: LlmRuntimeConfig) {

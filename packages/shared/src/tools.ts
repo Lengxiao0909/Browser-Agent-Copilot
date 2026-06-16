@@ -31,7 +31,10 @@ export type BrowserActionName =
   | 'browser.find_text'
   | 'browser.highlight_text'
   | 'browser.scroll_to_text'
-  | 'browser.read_selected_text';
+  | 'browser.read_selected_text'
+  | 'browser.search_web'
+  | 'browser.extract_search_results'
+  | 'browser.read_page_content';
 
 export interface BrowserActionRequest<Input = unknown> {
   action: BrowserActionName;
@@ -63,4 +66,30 @@ export interface BrowserTextMatch {
   text: string;
   before?: string;
   after?: string;
+}
+
+export interface BrowserSearchWebInput {
+  query: string;
+  engine?: 'google' | 'bing' | 'scholar';
+  inheritConversation?: boolean;
+  readTopResults?: boolean;
+  maxPages?: number;
+  keepTabsOpen?: boolean;
+}
+
+export interface BrowserSearchResult {
+  rank: number;
+  title: string;
+  url: string;
+  snippet?: string;
+  source?: string;
+}
+
+export interface BrowserPageContentResult {
+  url: string;
+  title: string;
+  description?: string;
+  headings?: string[];
+  textLength: number;
+  textExcerpt: string;
 }

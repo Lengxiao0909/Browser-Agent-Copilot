@@ -1,10 +1,11 @@
 import type { PageContext, PageHeading, PageLandmark, PageLink, SelectionReference } from '@bac/shared';
 
-const MAX_VISIBLE_TEXT = 6000;
-const MAX_FULL_TEXT = 14000;
+const MAX_VISIBLE_TEXT = 10000;
+const MAX_FULL_TEXT = 50000;
 const MAX_HEADINGS = 36;
 const MAX_LINKS = 40;
 const MAX_LANDMARKS = 24;
+const SKIPPED_TEXT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION']);
 
 export interface CapturedSelection {
   reference: SelectionReference;
@@ -13,6 +14,14 @@ export interface CapturedSelection {
 
 function normalizeText(text: string) {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+function shouldSkipElement(element: Element) {
+  if (element.closest('#browser-agent-copilot-root')) return true;
+  if (SKIPPED_TEXT_TAGS.has(element.tagName)) return true;
+  const role = element.getAttribute('role');
+  if (role === 'navigation' || role === 'banner' || role === 'contentinfo') return true;
+  return Boolean(element.closest('script,style,noscript,nav,header,footer,aside,#browser-agent-copilot-root'));
 }
 
 function getMetaDescription() {
@@ -41,7 +50,7 @@ function collectVisibleText(limit = MAX_VISIBLE_TEXT) {
     acceptNode(node) {
       const parent = node.parentElement;
       if (!parent || !isElementVisible(parent)) return NodeFilter.FILTER_REJECT;
-      if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT'].includes(parent.tagName)) {
+      if (shouldSkipElement(parent)) {
         return NodeFilter.FILTER_REJECT;
       }
       return normalizeText(node.textContent || '').length
@@ -56,6 +65,46 @@ function collectVisibleText(limit = MAX_VISIBLE_TEXT) {
     const text = normalizeText(walker.currentNode.textContent || '');
     chunks.push(text);
     total += text.length;
+  }
+  return chunks.join('\n').slice(0, limit);
+}
+
+function getReadableRoot() {
+  const candidates = [
+    ...document.querySelectorAll<HTMLElement>(
+      'article,main,[role="main"],[data-testid*="article" i],[class*="article" i],[class*="content" i],[id*="article" i],[id*="content" i]'
+    )
+  ].filter((element) => !shouldSkipElement(element));
+
+  if (!candidates.length) return document.body;
+
+  return candidates
+    .map((element) => ({
+      element,
+      textLength: collectTextFromElement(element, MAX_FULL_TEXT).length
+    }))
+    .sort((a, b) => b.textLength - a.textLength)[0]?.element || document.body;
+}
+
+function collectTextFromElement(root: Element | null | undefined, limit = MAX_FULL_TEXT) {
+  if (!root) return '';
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || shouldSkipElement(parent)) return NodeFilter.FILTER_REJECT;
+      return normalizeText(node.textContent || '').length
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    }
+  });
+
+  const chunks: string[] = [];
+  let total = 0;
+  while (walker.nextNode() && total < limit) {
+    const text = normalizeText(walker.currentNode.textContent || '');
+    chunks.push(text);
+    total += text.length + 1;
   }
   return chunks.join('\n').slice(0, limit);
 }
@@ -141,8 +190,9 @@ export function getCurrentSelection(): CapturedSelection | null {
 }
 
 export function collectPageContext(selection?: SelectionReference): PageContext {
-  const fullText =
-    document.body?.innerText && normalizeText(document.body.innerText).slice(0, MAX_FULL_TEXT);
+  const readableText = collectTextFromElement(getReadableRoot(), MAX_FULL_TEXT);
+  const bodyText = collectTextFromElement(document.body, MAX_FULL_TEXT);
+  const fullText = readableText.length >= 500 ? readableText : bodyText;
 
   return {
     url: location.href,

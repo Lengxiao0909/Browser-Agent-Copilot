@@ -126,6 +126,56 @@ export function createBuiltinBrowserActions(): ToolDefinition[] {
           selection: input.pageContext?.selection || null
         };
       }
+    },
+    {
+      name: 'browser.search_web',
+      title: 'Search web',
+      description: 'Opens a search results page in an agent-created tab and extracts visible result links.',
+      layer: 'browser-action',
+      risk: 'low',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          engine: { type: 'string', enum: ['google', 'bing', 'scholar'] },
+          readTopResults: { type: 'boolean' },
+          maxPages: { type: 'number' },
+          keepTabsOpen: { type: 'boolean' }
+        },
+        required: ['query']
+      },
+      async execute() {
+        return {
+          status: 'extension-background-required',
+          message: 'This action must be executed by the extension background service worker.'
+        };
+      }
+    },
+    {
+      name: 'browser.extract_search_results',
+      title: 'Extract search results',
+      description: 'Extracts ranked result titles, URLs, and snippets from a search results page.',
+      layer: 'browser-action',
+      risk: 'low',
+      async execute() {
+        return {
+          status: 'extension-bridge-required',
+          message: 'This action must be executed by the extension content script.'
+        };
+      }
+    },
+    {
+      name: 'browser.read_page_content',
+      title: 'Read page content',
+      description: 'Reads the current page readable text, title, description, and headings.',
+      layer: 'browser-action',
+      risk: 'low',
+      async execute() {
+        return {
+          status: 'extension-bridge-required',
+          message: 'This action must be executed by the extension content script.'
+        };
+      }
     }
   ];
 }

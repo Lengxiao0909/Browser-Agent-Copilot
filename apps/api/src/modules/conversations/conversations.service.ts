@@ -215,8 +215,16 @@ export class ConversationsService {
   }
 
   async deleteConversation(id: string) {
-    await this.prisma.conversation.delete({ where: { id } });
-    return { ok: true };
+    try {
+      await this.prisma.conversation.delete({ where: { id } });
+      return { ok: true, persisted: true };
+    } catch (error) {
+      console.warn(
+        '[Browser Agent Copilot] Conversation delete persistence is unavailable; treating local delete as complete.',
+        error
+      );
+      return { ok: true, persisted: false };
+    }
   }
 
   async createMessage(conversationId: string, input: MessageInput) {

@@ -34,6 +34,7 @@ textarea {
   display: flex;
   justify-content: center;
   position: fixed;
+  pointer-events: auto;
   z-index: 2147483647;
   -webkit-backdrop-filter: blur(18px) saturate(1.3);
   backdrop-filter: blur(18px) saturate(1.3);
@@ -106,10 +107,12 @@ textarea {
     0 28px 80px rgba(15, 23, 42, 0.24),
     0 8px 24px rgba(15, 23, 42, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.62);
+  contain: layout paint style;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: min(620px, calc(100vh - 24px));
   overflow: hidden;
+  pointer-events: auto;
   position: fixed;
   width: min(420px, calc(100vw - 24px));
   z-index: 2147483647;
@@ -121,6 +124,7 @@ textarea {
   display: flex;
   justify-content: space-between;
   min-height: 48px;
+  min-width: 0;
   padding: 10px 12px 9px 14px;
   touch-action: none;
   user-select: none;
@@ -205,12 +209,11 @@ textarea {
   border: 1px solid rgba(31, 35, 40, 0.07);
   border-radius: 11px;
   color: #1f2328;
-  cursor: pointer;
   display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) 28px;
   min-height: 54px;
-  padding: 9px 10px;
+  padding: 5px;
   text-align: left;
 }
 
@@ -220,36 +223,78 @@ textarea {
   border-color: rgba(16, 163, 127, 0.24);
 }
 
-.bac-history-item span {
+.bac-history-main {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 42px;
+  padding: 4px 5px 4px 7px;
+  text-align: left;
+}
+
+.bac-history-main:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.bac-history-main span {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
 }
 
-.bac-history-item strong,
-.bac-history-item small {
+.bac-history-main strong,
+.bac-history-main small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.bac-history-item strong {
+.bac-history-main strong {
   color: #111318;
   font-size: 12px;
   font-weight: 740;
 }
 
-.bac-history-item small {
+.bac-history-main small {
   color: rgba(31, 35, 40, 0.58);
   font-size: 11px;
 }
 
-.bac-history-item em {
+.bac-history-main em {
   color: rgba(31, 35, 40, 0.46);
   font-size: 11px;
   font-style: normal;
   font-weight: 700;
+}
+
+.bac-row-delete {
+  align-items: center;
+  align-self: stretch;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: rgba(31, 35, 40, 0.38);
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  min-width: 28px;
+}
+
+.bac-row-delete:hover {
+  background: rgba(207, 34, 46, 0.08);
+  color: #cf222e;
+}
+
+.bac-row-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
 }
 
 .bac-llm-pane {
@@ -270,25 +315,26 @@ textarea {
 }
 
 .bac-llm-item {
-  align-items: flex-start;
+  align-items: stretch;
   background: rgba(255, 255, 255, 0.66);
   border: 1px solid rgba(31, 35, 40, 0.07);
   border-radius: 10px;
   color: rgba(31, 35, 40, 0.7);
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
+  display: grid;
   font-size: 11px;
   gap: 2px;
+  grid-template-columns: minmax(0, 1fr) 24px;
   min-height: 40px;
-  padding: 8px;
+  padding: 4px;
   text-align: left;
 }
 
 .bac-llm-item.create {
   align-items: center;
+  display: flex;
   flex-direction: row;
   font-weight: 750;
+  padding: 8px;
 }
 
 .bac-llm-item.active,
@@ -298,15 +344,29 @@ textarea {
   color: #0c7d62;
 }
 
-.bac-llm-item span,
-.bac-llm-item small {
+.bac-llm-main {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px;
+  text-align: left;
+}
+
+.bac-llm-main span,
+.bac-llm-main small {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.bac-llm-item span {
+.bac-llm-main span {
   font-weight: 740;
 }
 
@@ -407,15 +467,22 @@ textarea {
 
 .bac-title {
   color: #111318;
+  flex: 1 1 auto;
   font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bac-header-actions {
   align-items: center;
   display: flex;
+  flex: 0 0 auto;
   gap: 6px;
+  min-width: max-content;
 }
 
 .bac-icon-button {
@@ -1126,6 +1193,101 @@ textarea {
   border-top: 1px solid rgba(31, 35, 40, 0.07);
   grid-row: 3;
   padding: 9px 12px 12px;
+}
+
+.bac-workflow-steps {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 1px;
+  scrollbar-width: none;
+}
+
+.bac-workflow-steps::-webkit-scrollbar {
+  display: none;
+}
+
+.bac-workflow-step {
+  align-items: center;
+  background: rgba(246, 248, 250, 0.86);
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  border-radius: 999px;
+  color: rgba(31, 35, 40, 0.56);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  max-width: 142px;
+  min-height: 26px;
+  padding: 0 8px 0 6px;
+}
+
+.bac-workflow-step.success {
+  background: rgba(16, 163, 127, 0.1);
+  border-color: rgba(16, 163, 127, 0.2);
+  color: #0c7d62;
+}
+
+.bac-workflow-step.running {
+  background: rgba(9, 105, 218, 0.08);
+  border-color: rgba(9, 105, 218, 0.18);
+  color: #0969da;
+}
+
+.bac-workflow-step.waiting {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.22);
+  color: #92400e;
+}
+
+.bac-workflow-step.error {
+  background: rgba(207, 34, 46, 0.08);
+  border-color: rgba(207, 34, 46, 0.18);
+  color: #cf222e;
+}
+
+.bac-workflow-step.cancelled {
+  background: rgba(110, 118, 129, 0.1);
+  border-color: rgba(110, 118, 129, 0.2);
+  color: #57606a;
+}
+
+.bac-workflow-icon {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 14px;
+  justify-content: center;
+  width: 14px;
+}
+
+.bac-workflow-step.running .bac-workflow-icon svg,
+.bac-workflow-step.waiting .bac-workflow-icon svg {
+  animation: bac-spin 820ms linear infinite;
+}
+
+.bac-workflow-icon i {
+  background: currentColor;
+  border-radius: 999px;
+  display: block;
+  height: 5px;
+  opacity: 0.42;
+  width: 5px;
+}
+
+.bac-workflow-label {
+  font-size: 11px;
+  font-weight: 720;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes bac-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .bac-reference {

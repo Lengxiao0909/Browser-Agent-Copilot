@@ -2,6 +2,8 @@ import { Body, Controller, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import type {
   ChatPlanResponse,
+  ChatReplanRequest,
+  ChatReplanResponse,
   ChatStreamEvent,
   ChatStreamRequest,
   LlmConfigTestRequest,
@@ -18,8 +20,14 @@ export class ChatController {
     return this.chatService.createToolPlan(body);
   }
 
+  @Post('/replan')
+  replan(@Body() body: ChatReplanRequest): Promise<ChatReplanResponse> {
+    return this.chatService.createToolReplan(body);
+  }
+
   @Post('/test-model')
   testModel(@Body() body: LlmConfigTestRequest): Promise<LlmConfigTestResponse> {
+    // Backward-compatible route for older extension builds. New UI uses /llm-models/test.
     return this.chatService.testLlmConfig(body);
   }
 

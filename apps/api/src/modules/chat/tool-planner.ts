@@ -11,13 +11,14 @@ function normalizeText(text?: string) {
 function createToolCall(
   toolName: AgentToolCall['toolName'],
   summary: string,
-  input?: unknown
+  input?: unknown,
+  risk: AgentToolCall['risk'] = 'low'
 ): AgentToolCall {
   return {
     id: createId('tool'),
     toolName,
     summary,
-    risk: 'low',
+    risk,
     input
   };
 }
@@ -53,6 +54,39 @@ function extractQueryAfterIntent(text: string, keywords: string[]) {
   return '';
 }
 
+function isWebResearchIntent(message: string) {
+  return includesAny(message, [
+    '研究',
+    '调研',
+    '文献',
+    '论文',
+    '综述',
+    '资料',
+    '搜索网络',
+    '网上搜索',
+    'web search',
+    'literature',
+    'paper',
+    'papers',
+    'survey'
+  ]);
+}
+
+function extractResearchQuery(rawMessage: string) {
+  const quoted = extractQuotedQuery(rawMessage);
+  if (quoted) return quoted;
+
+  const exampleMatch = rawMessage.match(/(?:如|例如|比如|方向是|主题是|关于)\s*[（(「《“"]?([^）)」》”"，,。；;!?！？]{2,40})/u);
+  if (exampleMatch?.[1]) return exampleMatch[1].trim();
+
+  return rawMessage
+    .replace(/请|帮我|给我|一下|搜索网络|网上搜索|搜索|查找|寻找|研究|调研|总结|整理|推荐|最有价值|价值性|值得阅读|阅读|综述文献|文献|论文|篇|的|等/gu, ' ')
+    .replace(/[，。！？,.!?;；:：]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
 export function createToolPlan(request: ChatStreamRequest): ChatPlanResponse {
   const rawMessage = normalizeText(request.message);
   const message = rawMessage.toLowerCase();
@@ -65,8 +99,29 @@ export function createToolPlan(request: ChatStreamRequest): ChatPlanResponse {
   const highlightQuery = extractQueryAfterIntent(rawMessage, ['高亮', '标记', 'highlight']);
   const scrollQuery = extractQueryAfterIntent(rawMessage, ['滚动到', '定位到', '跳转到', 'scroll to']);
   const findQuery = extractQueryAfterIntent(rawMessage, ['查找', '搜索', '寻找', '找到', 'find', 'search']);
+  const researchQuery = isWebResearchIntent(message) ? extractResearchQuery(rawMessage) : '';
 
-  if (highlightQuery) {
+  if (researchQuery) {
+    const isLiteratureTask = includesAny(message, ['文献', '论文', '综述', 'paper', 'papers', 'literature', 'survey']);
+    const query = isLiteratureTask
+      ? `${researchQuery} survey review paper`
+      : researchQuery;
+    addToolCall(
+      createToolCall(
+        'browser.search_web',
+        isLiteratureTask ? `搜索并阅读文献线索：${researchQuery}` : `搜索网络资料：${researchQuery}`,
+        {
+          query,
+          engine: isLiteratureTask ? 'scholar' : 'google',
+          inheritConversation: true,
+          readTopResults: true,
+          maxPages: isLiteratureTask ? 5 : 3,
+          keepTabsOpen: true
+        },
+        'medium'
+      )
+    );
+  } else if (highlightQuery) {
     addToolCall(
       createToolCall('browser.highlight_text', `高亮页面中的“${highlightQuery}”`, {
         query: highlightQuery,
@@ -98,12 +153,6 @@ export function createToolPlan(request: ChatStreamRequest): ChatPlanResponse {
 
   if (includesAny(message, ['选中', '选择的', '划选', 'selected', 'selection']) && request.context.selection?.text) {
     addToolCall(createToolCall('browser.read_selected_text', '读取当前页面选中文本'));
-  }
-
-  if (
-    includesAny(message, ['页面摘要', '页面信息', '总结页面', '分析页面', '分析当前页面', 'page summary', 'summarize page'])
-  ) {
-    addToolCall(createToolCall('browser.get_page_summary', '读取当前页面摘要信息'));
   }
 
   return { toolCalls };

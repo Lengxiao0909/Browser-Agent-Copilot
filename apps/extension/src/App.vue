@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import {
   ArrowDown,
+  Check,
+  CircleAlert,
   Copy,
   History,
+  LoaderCircle,
   Minus,
   Pencil,
   Plus,
@@ -13,6 +16,7 @@ import {
   Square,
   ThumbsDown,
   ThumbsUp,
+  Trash2,
   X
 } from 'lucide-vue-next';
 import { storeToRefs } from 'pinia';
@@ -45,6 +49,8 @@ const {
   conversations,
   conversationId,
   messages,
+  pendingToolConfirmation,
+  workflowSteps,
   draft,
   selection,
   isStreaming,
@@ -95,10 +101,14 @@ const canSend = computed(() => draft.value.trim().length > 0 && !isStreaming.val
 const visibleMessages = computed(() =>
   messages.value.filter((message) => message.role === 'user' || message.content.trim())
 );
+const visibleWorkflowSteps = computed(() =>
+  workflowSteps.value.some((step) => step.id.startsWith('tool:')) ? workflowSteps.value : []
+);
 const shouldShowContextualActions = computed(
   () =>
     !isStreaming.value &&
     !editingUserMessageId.value &&
+    visibleWorkflowSteps.value.length === 0 &&
     contextualActions.value.length > 0 &&
     (Boolean(selection.value) || (isComposerFocused.value && !draft.value.trim()))
 );
@@ -121,6 +131,11 @@ const selectedLlmModel = computed(() =>
   llmModels.value.find((model) => model.id === selectedLlmModelId?.value)
 );
 const isEditingSavedLlmModel = computed(() => Boolean(llmForm.value.id));
+
+const pendingToolRiskLabel = computed(() => {
+  if (!pendingToolConfirmation.value) return '';
+  return pendingToolConfirmation.value.risk === 'high' ? '高风险' : '需确认';
+});
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -150,6 +165,14 @@ function setInitialPositions() {
       y: Math.max(24, Math.round((window.innerHeight - panelHeight) / 2))
     },
     panelWidth,
+    Math.min(panelHeight, window.innerHeight - 24)
+  );
+}
+
+function keepPanelInViewport() {
+  panelPosition.value = clampToViewport(
+    panelPosition.value,
+    Math.min(panelWidth, window.innerWidth - 24),
     Math.min(panelHeight, window.innerHeight - 24)
   );
 }
@@ -281,7 +304,7 @@ function resetLlmForm(model?: UserLlmModel, clearStatus = true) {
         displayName: model.displayName,
         providerName: model.providerName,
         baseUrl: model.baseUrl,
-        apiKey: model.apiKey,
+        apiKey: '',
         model: model.model
       }
     : {
@@ -308,6 +331,10 @@ async function selectHistoryConversation(id: string) {
   activeOverlay.value = null;
 }
 
+async function deleteHistoryConversation(id: string) {
+  await store.deleteConversation(id);
+}
+
 async function selectLlmModel(model: UserLlmModel) {
   resetLlmForm(model);
   await store.selectLlmModel(model.id);
@@ -321,6 +348,13 @@ async function saveLlmForm() {
   const saved = await store.saveLlmModel(llmForm.value);
   if (saved) {
     resetLlmForm(saved, false);
+  }
+}
+
+async function deleteLlmModel(modelId: string) {
+  await store.deleteLlmModel(modelId);
+  if (llmForm.value.id === modelId) {
+    resetLlmForm(undefined, false);
   }
 }
 
@@ -513,6 +547,14 @@ watch(isStreaming, async (streaming) => {
   }
 });
 
+watch(
+  () => [visibleWorkflowSteps.value.length, Boolean(pendingToolConfirmation.value), isOpen.value].join('|'),
+  async () => {
+    await nextTick();
+    if (isOpen.value) keepPanelInViewport();
+  }
+);
+
 onMounted(() => {
   setInitialPositions();
   void store.hydrate();
@@ -635,21 +677,34 @@ onUnmounted(() => {
             <div v-else-if="isLoadingConversations" class="bac-conversation-empty">正在加载会话...</div>
             <div v-else-if="conversations.length === 0" class="bac-conversation-empty">还没有历史记录</div>
             <template v-else>
-              <button
+              <div
                 v-for="conversation in conversations"
                 :key="conversation.id"
                 class="bac-history-item"
                 :class="{ active: isActiveConversation(conversation.id) }"
-                type="button"
-                :disabled="isStreaming"
-                @click="selectHistoryConversation(conversation.id)"
               >
-                <span>
-                  <strong>{{ conversation.title }}</strong>
-                  <small>{{ getConversationPreview(conversation.lastMessage?.content) }}</small>
-                </span>
-                <em>{{ formatRelativeTime(getConversationActivityTime(conversation)) }}</em>
-              </button>
+                <button
+                  class="bac-history-main"
+                  type="button"
+                  :disabled="isStreaming"
+                  @click="selectHistoryConversation(conversation.id)"
+                >
+                  <span>
+                    <strong>{{ conversation.title }}</strong>
+                    <small>{{ getConversationPreview(conversation.lastMessage?.content) }}</small>
+                  </span>
+                  <em>{{ formatRelativeTime(getConversationActivityTime(conversation)) }}</em>
+                </button>
+                <button
+                  class="bac-row-delete"
+                  title="删除历史记录"
+                  type="button"
+                  :disabled="isStreaming"
+                  @click.stop="deleteHistoryConversation(conversation.id)"
+                >
+                  <Trash2 :size="13" />
+                </button>
+              </div>
             </template>
           </div>
 
@@ -664,17 +719,25 @@ onUnmounted(() => {
                 <Plus :size="13" />
                 <span>新增模型</span>
               </button>
-              <button
+              <div
                 v-for="model in llmModels"
                 :key="model.id"
                 class="bac-llm-item"
                 :class="{ active: isEditingSavedLlmModel && model.id === selectedLlmModelId }"
-                type="button"
-                @click="selectLlmModel(model)"
               >
-                <span>{{ model.displayName }}</span>
-                <small>{{ model.providerName }}</small>
-              </button>
+                <button class="bac-llm-main" type="button" @click="selectLlmModel(model)">
+                  <span>{{ model.displayName }}</span>
+                  <small>{{ model.providerName }}</small>
+                </button>
+                <button
+                  class="bac-row-delete"
+                  title="删除模型配置"
+                  type="button"
+                  @click.stop="deleteLlmModel(model.id)"
+                >
+                  <Trash2 :size="13" />
+                </button>
+              </div>
             </aside>
 
             <form class="bac-llm-form" @submit.prevent="saveLlmForm">
@@ -692,7 +755,7 @@ onUnmounted(() => {
               </label>
               <label>
                 <span>API Key</span>
-                <input v-model="llmForm.apiKey" type="password" autocomplete="off" placeholder="仅保存在本机浏览器">
+                <input v-model="llmForm.apiKey" type="password" autocomplete="off" placeholder="新增必填，编辑留空则沿用原 Key">
               </label>
               <label>
                 <span>模型</span>
@@ -790,6 +853,43 @@ onUnmounted(() => {
       </section>
 
       <footer class="bac-composer">
+        <div v-if="visibleWorkflowSteps.length" class="bac-workflow-steps" aria-label="任务步骤">
+          <div
+            v-for="step in visibleWorkflowSteps"
+            :key="step.id"
+            class="bac-workflow-step"
+            :class="step.status"
+            :title="step.detail || step.title"
+          >
+            <span class="bac-workflow-icon">
+              <Check v-if="step.status === 'success'" :size="12" />
+              <CircleAlert v-else-if="step.status === 'error'" :size="12" />
+              <CircleAlert v-else-if="step.status === 'cancelled'" :size="12" />
+              <LoaderCircle v-else-if="step.status === 'running' || step.status === 'waiting'" :size="12" />
+              <i v-else />
+            </span>
+            <span class="bac-workflow-label">{{ step.title }}</span>
+          </div>
+        </div>
+
+        <section v-if="pendingToolConfirmation" class="bac-tool-confirmation" aria-live="polite">
+          <div>
+            <span>需要确认浏览器动作</span>
+            <small>{{ pendingToolRiskLabel }}</small>
+          </div>
+          <p>{{ pendingToolConfirmation.summary }}</p>
+          <div class="bac-tool-confirmation-actions">
+            <button type="button" @click="store.confirmPendingToolAction">
+              <Check :size="12" />
+              继续
+            </button>
+            <button type="button" @click="store.rejectPendingToolAction">
+              <X :size="12" />
+              取消
+            </button>
+          </div>
+        </section>
+
         <section v-if="selection" class="bac-reference">
           <div class="bac-reference-head">
             <span>已引用选中内容</span>

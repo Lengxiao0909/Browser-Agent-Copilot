@@ -37,3 +37,17 @@ model Message {
 
   @@index([conversationId, createdAt])
 }
+
+model LlmModelConfig {
+  id           String   @id @default(cuid())
+  clientId     String?
+  displayName  String
+  providerName String
+  baseUrl      String
+  apiKey       String
+  model        String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([clientId, updatedAt])
+}

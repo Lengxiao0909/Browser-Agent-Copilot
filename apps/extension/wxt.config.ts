@@ -7,7 +7,7 @@ export default defineConfig({
     name: 'Browser Agent Copilot',
     description: 'A lightweight AI agent copilot that lives on every browser page.',
     version: '0.1.0',
-    permissions: ['storage', 'activeTab'],
+    permissions: ['storage', 'activeTab', 'tabs'],
     host_permissions: ['<all_urls>'],
     action: {
       default_title: 'Browser Agent Copilot'
