@@ -68,10 +68,15 @@ Before merge:
 
 ```powershell
 git status --short
+pnpm -r --if-present test
 pnpm typecheck
 pnpm lint
 pnpm build
 ```
+
+GitHub Actions runs the same quality gates on pull requests and pushes to
+`main`. Package-level tests are optional per package; add a `test` script to a
+workspace package and CI will pick it up automatically.
 
 ## Spec and Task Files
 
